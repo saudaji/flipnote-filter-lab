@@ -11564,6 +11564,8 @@ function _syncScrashHudVisibility() {
   document.body.classList.toggle('scrash-hud-open', show);
   const stackBottom = show ? ((ctrlsEl?.offsetHeight || 184) + 96) : 96;
   document.documentElement.style.setProperty('--scrash-stack-bottom', `${stackBottom}px`);
+  // Re-fit canvas after sidebar/panel state changes (sidebar on desktop changes available width)
+  window._scrashResizeCanvas?.();
 }
 
 function switchTab(tab) {
@@ -16966,9 +16968,12 @@ let _ctxScrTmp;
 
   // Resize canvas to fit area
   function _resize() {
-    const stackBottom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--scrash-stack-bottom')) || 280;
+    // On desktop (≥769px) with sidebar layout: canvas fills the area left of the 300px sidebar.
+    // --scrash-stack-bottom is irrelevant there (it reflects sidebar height, not below-canvas space).
+    const isSidebar = window.innerWidth >= 769 && document.body.classList.contains('scrash-hud-open');
+    const stackBottom = isSidebar ? 96 : (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--scrash-stack-bottom')) || 280);
     const avH = Math.max(160, window.innerHeight - 40 - stackBottom);
-    const avW = window.innerWidth;
+    const avW = isSidebar ? window.innerWidth - 300 : window.innerWidth;
     const aspect = _scrW / _scrH;
     if (avW / avH > aspect) {
       scrashCvs.style.width = (avH * aspect) + 'px';
@@ -16978,6 +16983,7 @@ let _ctxScrTmp;
       scrashCvs.style.height = (avW / aspect) + 'px';
     }
   }
+  window._scrashResizeCanvas = _resize;
   window.addEventListener('resize', () => {
     _syncScrashHudVisibility();
     _resize();
