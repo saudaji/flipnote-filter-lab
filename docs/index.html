@@ -2526,6 +2526,31 @@
           </div>
         </div>
         <div class="typo-row">
+          <span class="typo-row-label">INK</span>
+          <div class="typo-pill-strip" id="typoInkStrip">
+            <button class="typo-pill active" data-typo-ink="auto" type="button">AUTO</button>
+            <button class="typo-pill" data-typo-ink="orange" type="button"><span style="color:#FF6B35">●</span></button>
+            <button class="typo-pill" data-typo-ink="white" type="button"><span style="color:#F4F1E8">●</span></button>
+            <button class="typo-pill" data-typo-ink="pink" type="button"><span style="color:#FF5FA2">●</span></button>
+            <button class="typo-pill" data-typo-ink="cyan" type="button"><span style="color:#00E5FF">●</span></button>
+            <button class="typo-pill" data-typo-ink="yellow" type="button"><span style="color:#FFD43B">●</span></button>
+            <button class="typo-pill" data-typo-ink="red" type="button"><span style="color:#FF3B30">●</span></button>
+            <button class="typo-pill" data-typo-ink="violet" type="button"><span style="color:#B388FF">●</span></button>
+            <button class="typo-pill" data-typo-ink="black" type="button"><span style="color:#111111">●</span></button>
+          </div>
+        </div>
+        <div class="typo-row">
+          <span class="typo-row-label">PAPER</span>
+          <div class="typo-pill-strip" id="typoPaperStrip">
+            <button class="typo-pill active" data-typo-paper="auto" type="button">AUTO</button>
+            <button class="typo-pill" data-typo-paper="black" type="button"><span style="color:#0A0A0A">●</span></button>
+            <button class="typo-pill" data-typo-paper="white" type="button"><span style="color:#F4F1E8">●</span></button>
+            <button class="typo-pill" data-typo-paper="navy" type="button"><span style="color:#0D1B2A">●</span></button>
+            <button class="typo-pill" data-typo-paper="cream" type="button"><span style="color:#EFE6D5">●</span></button>
+            <button class="typo-pill" data-typo-paper="wine" type="button"><span style="color:#2A0E1C">●</span></button>
+          </div>
+        </div>
+        <div class="typo-row">
           <div class="typo-inline-head">
             <span class="typo-row-label">FIELD</span>
             <span class="typo-inline-value" id="vTypoField">60px</span>
@@ -3608,6 +3633,8 @@ const TYPO_FONTS = {
   pixel:  { label:'PIXEL', family:'"Lucida Console", monospace', weight:700, widthFactor:0.56, lineFactor:1.02 },
 };
 const TYPO_COLOR_MODES = ['mono', 'tint', 'source'];
+const TYPO_INKS = { auto:null, orange:'#FF6B35', white:'#F4F1E8', pink:'#FF5FA2', cyan:'#00E5FF', yellow:'#FFD43B', red:'#FF3B30', violet:'#B388FF', black:'#111111' };
+const TYPO_PAPERS = { auto:null, black:'#0A0A0A', white:'#F4F1E8', navy:'#0D1B2A', cream:'#EFE6D5', wine:'#2A0E1C' };
 const EARLY_IS_ANDROID = /Android/i.test(navigator.userAgent);
 const EARLY_IS_MOBILE = window.innerWidth <= 768 || /Mobi|Android/i.test(navigator.userAgent);
 const _flipUrlParams = new URLSearchParams(window.location.search);
@@ -3696,6 +3723,8 @@ const ASCII_PRESET_STORAGE_KEY = 'flip.ascii.preset';
 let typoFontPreset = 'sans';
 let typoPaletteKey = 'classic';
 let typoColorMode = 'tint';
+let typoInkKey = 'auto';
+let typoPaperKey = 'auto';
 let typoFieldVal = 60;
 let typoPhotoThreshold = 128;
 let typoGyroStrength = 60;
@@ -3752,7 +3781,7 @@ const gestureState = {
   lastTapTime: 0,
   lastTapId: null,
 };
-const TYPO_STICKER_LIMIT = 8;
+const TYPO_STICKER_LIMIT = 64;
 let _typoStickerCounter = 0;
 let _typoInteractiveRAF = 0;
 let _typoInteractionBound = false;
@@ -3907,6 +3936,8 @@ function _syncTypoCamUI() {
   document.querySelectorAll('[data-typo-font]').forEach(btn => btn.classList.toggle('active', btn.dataset.typoFont === typoFontPreset));
   document.querySelectorAll('[data-typo-palette]').forEach(btn => btn.classList.toggle('active', btn.dataset.typoPalette === typoPaletteKey));
   document.querySelectorAll('[data-typo-color]').forEach(btn => btn.classList.toggle('active', btn.dataset.typoColor === typoColorMode));
+  document.querySelectorAll('[data-typo-ink]').forEach(btn => btn.classList.toggle('active', btn.dataset.typoInk === typoInkKey));
+  document.querySelectorAll('[data-typo-paper]').forEach(btn => btn.classList.toggle('active', btn.dataset.typoPaper === typoPaperKey));
   const photoThreshRow = document.getElementById('typoPhotoThreshRow');
   const photoThreshEl = document.getElementById('typoPhotoThresh');
   const photoThreshVal = document.getElementById('vTypoPhotoThresh');
@@ -10488,7 +10519,7 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
   }
   const rng = maxG - minG || 1;
 
-  ctxAscii.fillStyle = `rgb(${pal.paper})`;
+  ctxAscii.fillStyle = typoPaperKey !== 'auto' ? TYPO_PAPERS[typoPaperKey] : `rgb(${pal.paper})`;
   ctxAscii.fillRect(0, 0, OUT_W, OUT_H);
   ctxAscii.font = cache.font;
   ctxAscii.textBaseline = 'top';
@@ -10537,8 +10568,8 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
     rowGlyphs.push(glyphRow);
   }
 
-  const monoFill = `rgb(${pal.ink})`;
-  const tintFill = '#FF6B35';
+  const monoFill = typoInkKey !== 'auto' ? TYPO_INKS[typoInkKey] : `rgb(${pal.ink})`;
+  const tintFill = typoInkKey !== 'auto' ? TYPO_INKS[typoInkKey] : '#FF6B35';
   const lineLeft = acFrameVal;
   const lineRight = acFrameVal + fw;
   for (let row = 0; row < rowGlyphs.length; row++) {
@@ -11930,6 +11961,7 @@ const FLIP_AUDIO_DEFAULT_SETTINGS = {
   aspectRatio: '4:3',
   resolution: 'medium',
   audioMode: 'off',
+  saveMode: 'files',
   effects: {
     lofi: { enabled: false, mix: 60, tone: 1200, crush: 8, grit: 20 },
     springReverb: { enabled: false, mix: 22, size: 1.8, decay: 1.6 },
@@ -11955,6 +11987,10 @@ const FLIP_AUDIO_MODE_OPTIONS = [
   { id:'off', label:'OFF' },
   { id:'on', label:'ON' },
   { id:'lofi', label:'LO-FI' },
+];
+const FLIP_SAVE_MODE_OPTIONS = [
+  { id:'files', label:'FILES' },
+  { id:'share', label:'CARRETE ↑' },
 ];
 const FLIP_AUDIO_CARD_DEFS = [
   {
@@ -13172,6 +13208,11 @@ function _renderFlipSettingsSections() {
       <div id="flipAudioModePills" class="flip-settings-pills"></div>
       <p class="flip-settings-help"><strong>OFF</strong> keeps current behavior. <strong>ON</strong> records clean mic. <strong>LO-FI</strong> arms Flip's signature chain.</p>
     </div>
+    <div class="flip-settings-block">
+      <h3>Save</h3>
+      <div id="flipSaveModePills" class="flip-settings-pills"></div>
+      <p class="flip-settings-help"><strong>FILES</strong> downloads directly. <strong>CARRETE ↑</strong> opens the native share sheet to save to Photos or share to Instagram.</p>
+    </div>
   `;
   _flipSettingsDom.secAudio.innerHTML = `
     <div id="flipAudioCards"></div>
@@ -13229,6 +13270,21 @@ function _renderFlipSettingsSections() {
     audioModePills.appendChild(btn);
   });
 
+  const saveModePills = _flipSettingsDom.secFormat.querySelector('#flipSaveModePills');
+  FLIP_SAVE_MODE_OPTIONS.forEach(opt => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'flip-settings-pill';
+    btn.dataset.saveMode = opt.id;
+    btn.textContent = opt.label;
+    btn.addEventListener('click', () => {
+      flipAudioSettings.saveMode = opt.id;
+      saveFlipAudioSettings();
+      _syncFlipSettingsUI();
+    });
+    saveModePills.appendChild(btn);
+  });
+
   const cardsRoot = _flipSettingsDom.secAudio.querySelector('#flipAudioCards');
   FLIP_AUDIO_CARD_DEFS.forEach(def => {
     const card = document.createElement('section');
@@ -13242,12 +13298,25 @@ function _renderFlipSettingsSections() {
       <div class="flip-settings-knobs" data-effect-knobs="${def.id}"></div>
     `;
     cardsRoot.appendChild(card);
-    card.querySelector('[data-effect-toggle]').addEventListener('click', () => {
+    card.querySelector('[data-effect-toggle]').addEventListener('click', async () => {
       const fx = flipAudioSettings.effects[def.id];
       fx.enabled = !fx.enabled;
+      // Effect cards live in the AUDIO tab, but recording only picks up audio
+      // when Audio Mode (OFF/ON/LO-FI, in the separate FORMAT tab) isn't OFF.
+      // Without this, enabling e.g. SPRING REVERB here silently does nothing —
+      // audioMode stays 'off', prepareForRecording() bails, and no audio at all
+      // (let alone the effect) makes it into the recorded video. Auto-arm audio
+      // recording here, mirroring how the LO-FI audio-mode pill auto-enables
+      // the lofi effect in the other direction.
+      if (fx.enabled && flipAudioSettings.audioMode === 'off') {
+        flipAudioSettings.audioMode = 'on';
+        const keepMode = await flipAudioEngine.primeFromGesture(flipAudioSettings);
+        if (!keepMode) { flipAudioSettings.audioMode = 'off'; fx.enabled = false; }
+      }
       saveFlipAudioSettings();
       flipAudioEngine.applySettings(flipAudioSettings);
       _syncFlipSettingsUI();
+      _updateFlipAudioStatus();
     });
     const knobRoot = card.querySelector('[data-effect-knobs]');
     def.params.forEach(param => {
@@ -13294,6 +13363,7 @@ function _syncFlipSettingsUI() {
   _flipSettingsDom.secFormat.querySelectorAll('[data-aspect]').forEach(btn => btn.classList.toggle('active', btn.dataset.aspect === flipAudioSettings.aspectRatio));
   _flipSettingsDom.secFormat.querySelectorAll('[data-resolution]').forEach(btn => btn.classList.toggle('active', btn.dataset.resolution === flipAudioSettings.resolution));
   _flipSettingsDom.secFormat.querySelectorAll('[data-audio-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.audioMode === flipAudioSettings.audioMode));
+  _flipSettingsDom.secFormat.querySelectorAll('[data-save-mode]').forEach(btn => btn.classList.toggle('active', btn.dataset.saveMode === flipAudioSettings.saveMode));
   FLIP_AUDIO_CARD_DEFS.forEach(def => {
     const fx = flipAudioSettings.effects[def.id];
     const btn = _flipSettingsDom.secAudio.querySelector(`[data-effect-toggle="${def.id}"]`);
@@ -13642,10 +13712,13 @@ document.getElementById('asciiCanvasCol').addEventListener('click', () => {
 // ════════════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════════════════
 // SAVE SYSTEM — single unified helper for all modules
-// saveBlob: always <a download>, no share sheet, no platform branching.
-// _shareOrDownload: explicit share action only (Share buttons).
+// _downloadBlob: always <a download>, no share sheet, no platform branching.
+// saveBlob: routes to _downloadBlob or _shareOrDownload per flipAudioSettings.saveMode.
+//   Videos in share mode finishing outside a user gesture show a deferred
+//   CTA (_promptShareSave) so navigator.share runs inside a real tap.
+// _shareOrDownload: explicit share action (Share buttons) — falls back to _downloadBlob.
 // ════════════════════════════════════════════════════════════════════
-function saveBlob(blob, filename) {
+function _downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -13654,6 +13727,62 @@ function saveBlob(blob, filename) {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function saveBlob(blob, filename) {
+  if (flipAudioSettings?.saveMode === 'share') {
+    // iOS: navigator.share needs a live user gesture. Video saves finalize
+    // async (MediaRecorder events), outside the tap — defer to an explicit
+    // CTA tap so the share sheet actually opens. Photos save inside the
+    // capture tap itself, so they share directly.
+    const isVideo = /^video\//i.test(blob?.type || '');
+    const hasGesture = navigator.userActivation ? navigator.userActivation.isActive : false;
+    if (isVideo && !hasGesture) { _promptShareSave(blob, filename); return; }
+    return _shareOrDownload(blob, filename);
+  }
+  _downloadBlob(blob, filename);
+}
+// Deferred share CTA — only one prompt at a time; a new save resolves the
+// previous one via direct download so no recording is ever lost. Auto-falls
+// back to direct download after 45s for the same reason.
+let _pendingShareSave = null;
+function _resolvePendingShareSave(useDownload) {
+  const p = _pendingShareSave;
+  if (!p) return;
+  _pendingShareSave = null;
+  clearTimeout(p.timer);
+  p.el.remove();
+  if (useDownload) _downloadBlob(p.blob, p.filename);
+}
+function _promptShareSave(blob, filename) {
+  _resolvePendingShareSave(true);
+  const el = document.createElement('div');
+  el.id = 'flipShareSavePrompt';
+  el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:160px;z-index:9998;display:flex;flex-direction:column;align-items:center;gap:6px;';
+  const main = document.createElement('button');
+  main.type = 'button';
+  main.id = 'flipShareSaveBtn';
+  main.textContent = '↑ GUARDAR VIDEO';
+  main.style.cssText = 'font-family:monospace;text-transform:uppercase;letter-spacing:1px;font-size:12px;padding:12px 18px;min-height:44px;background:rgba(15,15,15,0.94);color:#fff;border:2px solid rgba(255,255,255,0.5);cursor:pointer;';
+  const sub = document.createElement('button');
+  sub.type = 'button';
+  sub.id = 'flipShareSaveFilesBtn';
+  sub.textContent = 'GUARDAR EN ARCHIVOS';
+  sub.style.cssText = 'font-family:monospace;text-transform:uppercase;letter-spacing:0.5px;font-size:9px;padding:6px 10px;background:rgba(15,15,15,0.85);color:rgba(255,255,255,0.62);border:1px solid rgba(255,255,255,0.2);cursor:pointer;';
+  el.append(main, sub);
+  ((window.FLIP_BETA && _flipOsState?.appHost) ? _flipOsState.appHost : document.body).appendChild(el);
+  const state = { blob, filename, el, timer: setTimeout(() => _resolvePendingShareSave(true), 45000) };
+  _pendingShareSave = state;
+  main.addEventListener('click', () => {
+    if (_pendingShareSave !== state) return;
+    _pendingShareSave = null;
+    clearTimeout(state.timer);
+    el.remove();
+    _shareOrDownload(blob, filename);
+  });
+  sub.addEventListener('click', () => {
+    if (_pendingShareSave !== state) return;
+    _resolvePendingShareSave(true);
+  });
 }
 function _flipTs() {
   const d = new Date(), p = n => String(n).padStart(2, '0');
@@ -13667,7 +13796,7 @@ async function _shareOrDownload(blob, filename) {
     try { await navigator.share({ files: [file], title: 'FLIP' }); return; }
     catch(e) { if (e.name === 'AbortError') return; }
   }
-  saveBlob(blob, filename);
+  _downloadBlob(blob, filename);
 }
 function canvasToBlob(ctx) {
   return new Promise(r => ctx.canvas.toBlob(r, 'image/png'));
@@ -14520,7 +14649,7 @@ document.getElementById('upBtnReset').addEventListener('click', () => {
   acSepiaVal=0;acInvertVal=0;acThreshOn=false;acThreshVal=128;
   acSharpOn=false;acSharpVal=9;acEdgeOn=false;acEdgeVal=10;
   acGradientVal='normal';acSpaceVal=1;acFrameVal=0;acQualityVal='none';asciiClassicCols=100;asciiTypoCols=_getAsciiDefaultCols('typo');asciiSubMode='classic';asciiCols=asciiClassicCols;
-  typoFontPreset='sans';typoPaletteKey='classic';typoColorMode='tint';_resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true });
+  typoFontPreset='sans';typoPaletteKey='classic';typoColorMode='tint';typoInkKey='auto';typoPaperKey='auto';_resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true });
   upExposureVal=0;upShadowsVal=0;upHighlightsVal=0;upDitherIntVal=100;upGrainVal=0;upVignetteVal=0;
   upPalHueVal=0;upMixVal=100;
     // Reset MIX and Palette HUE
@@ -14698,6 +14827,18 @@ document.querySelectorAll('[data-typo-color]').forEach(btn => btn.addEventListen
   asciiSettingsChanged();
   saveSettings();
 }));
+document.querySelectorAll('[data-typo-ink]').forEach(btn => btn.addEventListener('click', () => {
+  typoInkKey = btn.dataset.typoInk;
+  _syncTypoCamUI();
+  asciiSettingsChanged();
+  saveSettings();
+}));
+document.querySelectorAll('[data-typo-paper]').forEach(btn => btn.addEventListener('click', () => {
+  typoPaperKey = btn.dataset.typoPaper;
+  _syncTypoCamUI();
+  asciiSettingsChanged();
+  saveSettings();
+}));
 bindSlider('typoField', 'vTypoField', 'px', v=>parseInt(v), v=>{
   typoFieldVal = v;
   _syncTypoFieldValue();
@@ -14843,7 +14984,7 @@ document.getElementById('acReset').addEventListener('click', () => {
   document.getElementById('cbEdge'  ).checked=false;document.getElementById('acEdge'  ).disabled=true;
   document.getElementById('acGradient').value='normal';
   document.getElementById('acQuality' ).value='none';
-  typoFontPreset='sans'; typoPaletteKey='classic'; typoColorMode='tint'; _resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true }); _syncTypoCamUI();
+  typoFontPreset='sans'; typoPaletteKey='classic'; typoColorMode='tint'; typoInkKey='auto'; typoPaperKey='auto'; _resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true }); _syncTypoCamUI();
   // Reset Smooth Mode
   _asciiSmoothMode=false; document.getElementById('btnSmoothMode').classList.remove('active');
   // Reset pythonization
@@ -17332,7 +17473,7 @@ function saveSettings() {
       sonoPreset, sonoMixVal, sonoChaosVal,
       wmpPreset: wmpPreset, wmpSensVal, wmpTrailsVal,
       uploadMode,
-      asciiCols, asciiClassicCols, asciiTypoCols, asciiSubMode, typoFontPreset, typoPaletteKey, typoColorMode, typoFieldVal, typoPhotoThreshold, typoGyroStrength,
+      asciiCols, asciiClassicCols, asciiTypoCols, asciiSubMode, typoFontPreset, typoPaletteKey, typoColorMode, typoInkKey, typoPaperKey, typoFieldVal, typoPhotoThreshold, typoGyroStrength,
       acGradientVal, acSpaceVal, acQualityVal, acFrameVal,
       acBrightVal, acContrastVal, acSatVal, acHueVal, acGrayVal,
       acSepiaVal, acInvertVal, acThreshOn, acThreshVal,
@@ -17488,6 +17629,8 @@ function loadSettings() {
     if (s.typoFontPreset && TYPO_FONTS[s.typoFontPreset]) typoFontPreset = s.typoFontPreset;
     if (s.typoPaletteKey && TYPO_PALETTES[s.typoPaletteKey]) typoPaletteKey = s.typoPaletteKey;
     if (s.typoColorMode && TYPO_COLOR_MODES.includes(s.typoColorMode)) typoColorMode = s.typoColorMode;
+    if (s.typoInkKey && s.typoInkKey in TYPO_INKS) typoInkKey = s.typoInkKey;
+    if (s.typoPaperKey && s.typoPaperKey in TYPO_PAPERS) typoPaperKey = s.typoPaperKey;
     if (s.typoFieldVal !== undefined) typoFieldVal = Math.max(30, Math.min(150, Math.round(s.typoFieldVal)));
     if (s.typoPhotoThreshold !== undefined) typoPhotoThreshold = Math.max(40, Math.min(220, Math.round(s.typoPhotoThreshold)));
     if (s.typoGyroStrength !== undefined) typoGyroStrength = Math.max(10, Math.min(150, Math.round(s.typoGyroStrength)));

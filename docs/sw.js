@@ -1,4 +1,4 @@
-const CACHE = 'flipnote-filter-v60-typo-vendored';
+const CACHE = 'flipnote-filter-v61-ascii-color-audio-share';
 const ASSETS = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png', './pretext.js',
   './fonts/Bloom-Regular.otf', './fonts/BNMonica.otf', './fonts/Fluidic-Regular.otf', './fonts/Canterbury.ttf'];
 
