@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": [".claude/serve.js"],
       "port": 8742
+    },
+    {
+      "name": "saudaji",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [".claude/serve-saudaji.js"],
+      "port": 4321
     }
   ]
 }

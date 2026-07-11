@@ -17053,7 +17053,7 @@ async function startExtAudio(deviceId) {
 
   extAudioMode = true;
   document.body.classList.add('ext-audio');
-  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; vid.srcObject = null; }
   _clearCamZoomSupport();
   _syncCamZoomUI();
   cameraRunning = false;
@@ -17077,6 +17077,11 @@ async function startExtAudio(deviceId) {
   } else if (activeTab === 'wmp') {
     document.getElementById('wmpPerm').classList.remove('visible');
     if (!wmpRunning) { wmpRunning = true; requestAnimationFrame(wmpLoop); }
+  } else if (activeTab === 'scrash') {
+    if (!scrashRunning) { scrashRunning = true; _scrStartT = null; }
+    if (!_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
+  } else if (activeTab === 'sflow') {
+    if (typeof window._sflowStartExtAudio === 'function') window._sflowStartExtAudio();
   }
   console.log('[ExtAudio] started. Stream tracks:', extMicStream.getTracks().map(t => t.label));
 }
@@ -17112,6 +17117,11 @@ async function stopExtAudio() {
     await startCamera(facingMode);
     asciiRunning = true;
     requestAnimationFrame(asciiLoop);
+  } else if (activeTab === 'scrash') {
+    await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+  } else if (activeTab === 'sflow') {
+    // Don't force camera — FLOW starts via its own CAM button as usual.
+    if (typeof window._sflowStop === 'function') window._sflowStop();
   }
 }
 
@@ -17143,12 +17153,17 @@ const scrashCvs = document.getElementById('scrashCanvas');
 const ctxScrash = scrashCvs.getContext('2d', { willReadFrequently: true });
 const _scrTmp    = document.createElement('canvas');
 let _ctxScrTmp;
+// EXT AUDIO source: persistent scrolling buffer used as the GLITCH source image when there's no camera frame
+const _scrAudioBuf = document.createElement('canvas');
+let _ctxScrAudioBuf;
 
 (function _initScrash() {
   let _scrW = 512, _scrH = 384;
   scrashCvs.width = _scrW; scrashCvs.height = _scrH;
   _scrTmp.width = _scrW; _scrTmp.height = _scrH;
   _ctxScrTmp = _scrTmp.getContext('2d', { willReadFrequently: true });
+  _scrAudioBuf.width = _scrW; _scrAudioBuf.height = _scrH;
+  _ctxScrAudioBuf = _scrAudioBuf.getContext('2d', { willReadFrequently: true });
 
   // Resize canvas to fit area
   function _resize() {
@@ -17182,6 +17197,7 @@ let _ctxScrTmp;
       _scrW = parseInt(btn.dataset.sw); _scrH = parseInt(btn.dataset.sh);
       scrashCvs.width = _scrW; scrashCvs.height = _scrH;
       _scrTmp.width   = _scrW; _scrTmp.height   = _scrH;
+      _scrAudioBuf.width = _scrW; _scrAudioBuf.height = _scrH;
       _resize();
     });
   });
@@ -17331,13 +17347,22 @@ let _ctxScrTmp;
 // Core pixel effect — applies SCRASH effects from srcCtx to dstCtx
 // srcCtx must have pixels already drawn; dstCtx receives result
 // t = elapsed seconds (used for animation)
-function _applyScrash(srcCtx, dstCtx, w, h, t) {
+function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod) {
   const { data: px } = srcCtx.getImageData(0, 0, w, h);
   const out = new Uint8ClampedArray(w * h * 4);
 
+  // EXT AUDIO: additive modulation of a few params on top of the slider base values —
+  // sliders are never overwritten, only nudged so the music is visibly felt.
+  let chromaEff = scrChromaVal, waveEff = scrWaveVal, grainEff = scrGrainVal;
+  if (audioMod) {
+    chromaEff = Math.min(50,  scrChromaVal + audioMod.trebE * 25);
+    waveEff   = Math.min(30,  scrWaveVal   + audioMod.bassE * 22);
+    grainEff  = Math.min(100, scrGrainVal  + audioMod.rms   * 70);
+  }
+
   const animT    = t * scrSpeedVal * 0.02;
-  const cOff     = scrAnimateOn ? ((Math.sin(animT * 1.3) * 0.5 + 0.5) * scrChromaVal) | 0 : scrChromaVal | 0;
-  const waveAmp  = scrAnimateOn ? (Math.sin(animT * 0.8)  * 0.5 + 0.5) * scrWaveVal   : scrWaveVal;
+  const cOff     = scrAnimateOn ? ((Math.sin(animT * 1.3) * 0.5 + 0.5) * chromaEff) | 0 : chromaEff | 0;
+  const waveAmp  = scrAnimateOn ? (Math.sin(animT * 0.8)  * 0.5 + 0.5) * waveEff   : waveEff;
   const crushT   = (scrCrushVal / 100) * 255;
   const neonT    = scrNeonVal / 100;
   const dripT    = scrDripVal / 100;
@@ -17393,8 +17418,8 @@ function _applyScrash(srcCtx, dstCtx, w, h, t) {
         r=Math.max(0,Math.min(255,hr))|0; g=Math.max(0,Math.min(255,hg))|0; b=Math.max(0,Math.min(255,hb))|0;
       }
       // GRAIN: luminance noise
-      if (scrGrainVal > 0) {
-        const noise = ((Math.random()-0.5)*scrGrainVal*2)|0;
+      if (grainEff > 0) {
+        const noise = ((Math.random()-0.5)*grainEff*2)|0;
         r=Math.max(0,Math.min(255,r+noise));
         g=Math.max(0,Math.min(255,g+noise));
         b=Math.max(0,Math.min(255,b+noise));
@@ -17413,13 +17438,86 @@ function _applyScrash(srcCtx, dstCtx, w, h, t) {
   dstCtx.putImageData(new ImageData(out, w, h), 0, 0);
 }
 
+// EXT AUDIO: paints an audio-reactive source image into _ctxScrTmp when there's no camera frame.
+// Uses a persistent scrolling buffer (bass-driven speed) with a right-edge frequency-bar column
+// and a treble/mid waveform overlay, so it carries motion history instead of a static frame.
+// Returns band energies so _applyScrash can additively modulate a few params.
+function _renderScrashAudioSource(w, h, t) {
+  const an = extAnalyser;
+  const freqN = an.frequencyBinCount;
+  const freqData = new Uint8Array(freqN);
+  const timeData = new Uint8Array(an.fftSize);
+  an.getByteFrequencyData(freqData);
+  an.getByteTimeDomainData(timeData);
+
+  const bassEnd = Math.max(1, Math.floor(freqN * 0.08));
+  const midEnd  = Math.max(bassEnd + 1, Math.floor(freqN * 0.35));
+  let bassE = 0, midE = 0, trebE = 0;
+  for (let i = 0;       i < bassEnd; i++) bassE += freqData[i];
+  for (let i = bassEnd; i < midEnd;  i++) midE  += freqData[i];
+  for (let i = midEnd;  i < freqN;   i++) trebE += freqData[i];
+  bassE = Math.min(1, (bassE / (bassEnd * 255)) * 3);
+  midE  = Math.min(1, (midE  / ((midEnd - bassEnd) * 255)) * 3);
+  trebE = Math.min(1, (trebE / ((freqN - midEnd) * 255)) * 3);
+  let rms = 0;
+  for (let i = 0; i < timeData.length; i++) { const v = (timeData[i] - 128) / 128; rms += v * v; }
+  rms = Math.min(1, Math.sqrt(rms / timeData.length) * 3);
+
+  if (_scrAudioBuf.width !== w || _scrAudioBuf.height !== h) {
+    _scrAudioBuf.width = w; _scrAudioBuf.height = h;
+  }
+
+  // Fade previous frame (trail) then scroll left — bass drives scroll speed
+  _ctxScrAudioBuf.globalCompositeOperation = 'source-over';
+  _ctxScrAudioBuf.fillStyle = 'rgba(5,3,10,0.15)';
+  _ctxScrAudioBuf.fillRect(0, 0, w, h);
+  const shift = Math.max(1, Math.round(1 + bassE * 5));
+  _ctxScrAudioBuf.drawImage(_scrAudioBuf, -shift, 0, w, h);
+
+  // New frequency-bar column at the right edge (grave→forma grande/lenta, agudo→detalle fino)
+  const colW  = Math.max(6, Math.round(w * 0.035));
+  const bars  = 28;
+  const bandStep = Math.max(1, Math.floor(freqN / bars));
+  const barW = colW / bars * 6; // slightly overlapping wide bars for a saturated block feel
+  for (let bIdx = 0; bIdx < bars; bIdx++) {
+    let e = 0;
+    for (let k = 0; k < bandStep; k++) e += freqData[bIdx * bandStep + k] || 0;
+    e = e / (bandStep * 255);
+    const barH = Math.max(2, e * h);
+    const hue  = (bIdx / bars) * 300 + t * 24 + bassE * 60;
+    const sat  = 85 + trebE * 15;
+    const light = 32 + e * 48;
+    _ctxScrAudioBuf.fillStyle = `hsl(${hue % 360},${sat}%,${light}%)`;
+    const bx = w - colW + (bIdx / bars) * colW;
+    const by = h - barH;
+    _ctxScrAudioBuf.fillRect(bx, by, barW, barH);
+  }
+
+  // Waveform overlay for fine detail texture
+  _ctxScrAudioBuf.strokeStyle = `hsla(${(t * 40) % 360},90%,${70 - trebE * 20}%,0.85)`;
+  _ctxScrAudioBuf.lineWidth = Math.max(1, 1 + rms * 4);
+  _ctxScrAudioBuf.beginPath();
+  const step = Math.max(1, Math.ceil(timeData.length / colW));
+  for (let i = 0, n = 0; i < timeData.length; i += step, n++) {
+    const x = w - colW + (n / (colW / step)) * colW;
+    const y = h / 2 + ((timeData[i] - 128) / 128) * (h / 2) * (0.4 + midE * 0.6);
+    if (n === 0) _ctxScrAudioBuf.moveTo(x, y); else _ctxScrAudioBuf.lineTo(x, y);
+  }
+  _ctxScrAudioBuf.stroke();
+
+  _ctxScrTmp.clearRect(0, 0, w, h);
+  _ctxScrTmp.drawImage(_scrAudioBuf, 0, 0);
+
+  return { bassE, midE, trebE, rms };
+}
+
 function _scrashLoop(t) {
   if (!scrashRunning) { _scrRafId = null; return; }
   if (_scrStartT === null) _scrStartT = t;
   const elapsed = (t - _scrStartT) / 1000;
+  const SW = scrashCvs.width, SH = scrashCvs.height;
 
   if (vid.videoWidth) {
-    const SW = scrashCvs.width, SH = scrashCvs.height;
     // Draw video fitting the canvas (letterbox — show full image, no crop)
     const vA = vid.videoWidth / vid.videoHeight, cA = SW / SH;
     let dx=0, dy=0, dw=SW, dh=SH;
@@ -17428,6 +17526,9 @@ function _scrashLoop(t) {
     _ctxScrTmp.fillStyle='#000'; _ctxScrTmp.fillRect(0,0,SW,SH);
     _ctxScrTmp.drawImage(vid, dx, dy, dw, dh);
     _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed);
+  } else if (extAudioMode && extAnalyser) {
+    const audioMod = _renderScrashAudioSource(SW, SH, elapsed);
+    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed, audioMod);
   }
 
   _scrRafId = requestAnimationFrame(_scrashLoop);
@@ -17736,6 +17837,9 @@ if (screen.width > 768) {
   let _sfSegInitBusy   = false;
   let _sfPretextCache  = null;   // {chars:[{ch,x,y}], cw, ch}
   let _sfResizeTimer   = 0;
+  let _sfMode          = 'cam';  // 'cam' | 'audio'
+  let _sfAudioStartT   = 0;
+  let _sfFreqData      = null;
 
   const SF_AURA_DEPTH  = { s: 6, m: 12, l: 22 };
   const SF_COLOR_MAP   = {
@@ -17905,10 +18009,132 @@ if (screen.width > 768) {
     }
   }
 
+  // ── Procedural audio-driven mask ─────────────────────────────────────
+  // Returns a Float32Array(maskW*maskH) of confidences (0/1) in the same
+  // format _sfBuildVectors expects (>= 0.5 == inside), so the existing
+  // distance-field / normal / aura-glyph pipeline can consume it unchanged.
+  function _sfAudioMask(maskW, maskH, t) {
+    const mask = new Float32Array(maskW * maskH);
+    if (!extAnalyser) return mask;
+
+    const bufLen = extAnalyser.frequencyBinCount;
+    if (!_sfFreqData || _sfFreqData.length !== bufLen) _sfFreqData = new Uint8Array(bufLen);
+    extAnalyser.getByteFrequencyData(_sfFreqData);
+
+    const bandEnergy = (loFrac, hiFrac) => {
+      const lo = Math.floor(loFrac * bufLen);
+      const hi = Math.max(lo + 1, Math.floor(hiFrac * bufLen));
+      let sum = 0, n = 0;
+      for (let i = lo; i < hi && i < bufLen; i++) { sum += _sfFreqData[i]; n++; }
+      return n ? (sum / n) / 255 : 0;
+    };
+
+    const bass   = bandEnergy(0,    0.08);
+    const lowMid = bandEnergy(0.08, 0.25);
+    const mid    = bandEnergy(0.25, 0.5);
+    const high   = bandEnergy(0.5,  1.0);
+
+    const cx = maskW / 2, cy = maskH / 2;
+    const baseR = Math.min(maskW, maskH) * (0.20 + bass * 0.20); // breathes with bass
+    const rot   = t * 0.4; // slow rotation
+
+    // Radial deformation: a few harmonics driven by different frequency bands
+    const h1k = 3, h1amp = lowMid * baseR * 0.35, h1ph = rot * 1.3;
+    const h2k = 5, h2amp = mid    * baseR * 0.25, h2ph = rot * -0.8 + 1.0;
+    const h3k = 8, h3amp = high   * baseR * 0.15, h3ph = rot * 2.1;
+
+    for (let y = 0; y < maskH; y++) {
+      const dy = y - cy;
+      for (let x = 0; x < maskW; x++) {
+        const dx = x - cx;
+        const theta = Math.atan2(dy, dx);
+        const r = baseR
+          + h1amp * Math.sin(h1k * theta + h1ph)
+          + h2amp * Math.sin(h2k * theta + h2ph)
+          + h3amp * Math.sin(h3k * theta + h3ph);
+        const rad = Math.sqrt(dx * dx + dy * dy);
+        mask[y * maskW + x] = rad <= r ? 1 : 0;
+      }
+    }
+    return mask;
+  }
+
+  // ── RAF sub-loop: audio-driven render (no camera / no segmenter) ────
+  async function _sfLoopAudio() {
+    const CW = sfCanvas.width, CH = sfCanvas.height;
+    if (!CW || !CH) return;
+    if (!extAnalyser) return;
+
+    const t = (performance.now() - _sfAudioStartT) / 1000;
+
+    const maskW = 96;
+    const maskH = Math.max(16, Math.round(maskW * CH / CW));
+    const auraDepth = SF_AURA_DEPTH[_sfAuraKey] || SF_AURA_DEPTH.m;
+
+    const maskArr = _sfAudioMask(maskW, maskH, t);
+    const { dist, nx, ny } = _sfBuildVectors(maskArr, maskW, maskH, auraDepth);
+
+    // ── Colour ──────────────────────────────────────────────────────
+    let inkHex;
+    if (_sfColorKey === 'palette') {
+      const pal = _getPal(false);
+      inkHex = `rgb(${pal.ink[0]},${pal.ink[1]},${pal.ink[2]})`;
+    } else {
+      inkHex = SF_COLOR_MAP[_sfColorKey] || '#ffffff';
+    }
+
+    // ── Clear (no video to draw in audio mode) ───────────────────────
+    sfCtx.save();
+    sfCtx.fillStyle = '#000';
+    sfCtx.fillRect(0, 0, CW, CH);
+
+    // ── Build/use Pretext grid ───────────────────────────────────────
+    let grid;
+    try {
+      grid = await _sfBuildGrid(CW, CH);
+    } catch (_) { sfCtx.restore(); return; }
+
+    // ── Render aura characters ───────────────────────────────────────
+    sfCtx.font      = SF_FONT;
+    sfCtx.textAlign = 'center';
+    sfCtx.textBaseline = 'middle';
+
+    for (const g of grid.chars) {
+      // Map canvas coord → mask coord (1:1 proportional, no video scale)
+      const mx = Math.round((g.x / CW) * maskW) | 0;
+      const my = Math.round((g.y / CH) * maskH) | 0;
+      if (mx < 0 || mx >= maskW || my < 0 || my >= maskH) continue;
+
+      const mi = my * maskW + mx;
+      const d  = dist[mi];
+      if (d <= 0 || d > auraDepth) continue;   // only aura band
+
+      const alpha   = 1 - (d / auraDepth) * 0.6;
+      const push    = (auraDepth - d) * 0.8;
+      const normX   = nx[mi];
+      const normY   = ny[mi];
+      const tx      = g.x + normX * push;
+      const ty      = g.y + normY * push;
+      const angle   = Math.atan2(normY, normX) + Math.PI / 2;
+
+      sfCtx.save();
+      sfCtx.globalAlpha = alpha;
+      sfCtx.fillStyle   = inkHex;
+      sfCtx.translate(tx, ty);
+      sfCtx.rotate(angle);
+      sfCtx.fillText(g.ch, 0, 0);
+      sfCtx.restore();
+    }
+
+    sfCtx.restore();
+  }
+
   // ── RAF render loop ─────────────────────────────────────────────────
   async function _sfLoop() {
     if (!_sfActive) return;
     _sfRafId = requestAnimationFrame(_sfLoop);
+
+    if (_sfMode === 'audio') { await _sfLoopAudio(); return; }
 
     if (!sfVid.videoWidth || sfVid.readyState < 2) return;
 
@@ -18020,8 +18246,32 @@ if (screen.width > 768) {
     sfCtx.restore();
   }
 
+  // ── Start (audio-driven, no camera / no MediaPipe) ───────────────────
+  function _sfStartAudioMode() {
+    _sfMode = 'audio';
+    if (_sfStream) {
+      _sfStream.getTracks().forEach(t => t.stop());
+      _sfStream = null;
+    }
+    sfVid.srcObject = null;
+    _sfResize();
+    _sfAudioStartT = performance.now();
+    _sfActive = true;
+    _sfBadge('');
+    cancelAnimationFrame(_sfRafId);
+    _sfRafId = requestAnimationFrame(_sfLoop);
+  }
+
+  // Exposed so startExtAudio() can kick-start FLOW's audio mode when the
+  // user is already on the sflow tab when they activate ext audio.
+  window._sflowStartExtAudio = function() {
+    if (extAudioMode && extAnalyser && !_sfActive) _sfStartAudioMode();
+  };
+
   // ── Start camera ────────────────────────────────────────────────────
   async function _sfStart(facing) {
+    if (extAudioMode && extAnalyser) { _sfStartAudioMode(); return; }
+    _sfMode = 'cam';
     _sfFacing = facing || _sfFacing;
     _sfBadge('FLOW — starting…');
 
@@ -18065,6 +18315,7 @@ if (screen.width > 768) {
   // ── Stop (exposed globally so switchTab can call it) ────────────────
   window._sflowStop = function _sflowStop() {
     _sfActive = false;
+    _sfMode = 'cam';
     cancelAnimationFrame(_sfRafId);
     _sfRafId = 0;
     if (_sfStream) {
