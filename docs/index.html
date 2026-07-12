@@ -1936,6 +1936,77 @@
       z-index:5; white-space:nowrap;
     }
 
+    /* ══════════════════════════════════════════════════
+       EDIT — F5: layered pipeline editor (source → up to 3
+       chained CAM/GLITCH steps via the PIPELINE KEYSTONE)
+    ══════════════════════════════════════════════════ */
+    #editArea {
+      display:none; position:fixed; top:40px; bottom:calc(96px + var(--edit-hud-h, 0px)); left:0; right:0;
+      align-items:center; justify-content:center; background:#000;
+    }
+    #editArea.visible { display:flex; }
+    #editCanvas {
+      display:block; max-width:100%; max-height:100%;
+      image-rendering:pixelated; image-rendering:crisp-edges; background:#000;
+    }
+    #editHUD {
+      display:none; position:fixed; bottom:96px; left:0; right:0; height:auto; max-height:52vh;
+      background:var(--ink); border-top:1px solid var(--dark);
+      flex-direction:column; gap:8px; padding:8px 14px; z-index:9;
+      overflow-y:auto; -webkit-overflow-scrolling:touch;
+    }
+    #editHUD.visible { display:flex; }
+    .edit-source-row { display:flex; gap:4px; flex-wrap:wrap; }
+    .edit-src-pill {
+      flex:1; min-width:60px; min-height:40px; background:none; border:1px solid var(--dark); color:var(--mid);
+      font-family:monospace; font-size:9px; font-weight:bold; letter-spacing:.5px;
+      padding:5px 4px; cursor:pointer; transition:.1s; white-space:nowrap;
+    }
+    .edit-src-pill.active { background:var(--paper); color:var(--ink); border-color:var(--paper); }
+    #editLayersList { display:flex; flex-direction:column; gap:4px; }
+    .edit-layer-row {
+      display:flex; align-items:center; gap:6px; padding:4px 6px;
+      border:1px solid var(--dark); background:rgba(255,255,255,.02);
+    }
+    .edit-layer-row.bypassed { opacity:.4; }
+    .edit-layer-bypass {
+      min-width:40px; min-height:40px; background:none; border:1px solid var(--dark); color:var(--mid);
+      font-family:monospace; font-size:14px; cursor:pointer; flex-shrink:0;
+    }
+    .edit-layer-bypass.on { color:#39ff14; border-color:#39ff14; }
+    .edit-layer-name { flex:1; color:var(--paper); font-family:monospace; font-size:10px; letter-spacing:1px; }
+    .edit-layer-btn {
+      min-width:40px; min-height:40px; background:none; border:1px solid var(--dark); color:var(--mid);
+      font-family:monospace; font-size:12px; cursor:pointer; flex-shrink:0;
+    }
+    .edit-layer-btn:disabled { opacity:.25; cursor:not-allowed; }
+    .edit-layer-btn.remove { color:#ff6666; border-color:#5a2020; }
+    .edit-add-row { display:flex; gap:6px; }
+    .edit-add-btn {
+      flex:1; min-height:40px; background:none; border:1px solid var(--dark); color:var(--paper);
+      font-family:monospace; font-size:9px; font-weight:bold; letter-spacing:1px;
+      padding:6px 4px; cursor:pointer; transition:.1s;
+    }
+    .edit-add-btn:disabled { opacity:.3; cursor:not-allowed; }
+    .edit-hint { color:var(--mid); font-family:monospace; font-size:9px; letter-spacing:.5px; cursor:pointer; }
+    .edit-glitch-mini { display:flex; flex-direction:column; gap:4px; border-top:1px solid var(--dark); padding-top:6px; }
+    .edit-mini-row { display:flex; align-items:center; gap:6px; }
+    .edit-mini-row .emr-lbl { color:var(--paper); font-family:monospace; font-size:9px; letter-spacing:1px; min-width:52px; flex-shrink:0; }
+    .edit-mini-row .emr-val { color:var(--paper); font-family:monospace; font-size:9px; min-width:24px; text-align:right; flex-shrink:0; }
+    .edit-mini-row input[type="range"] { flex:1; height:3px; accent-color:var(--paper); cursor:pointer; }
+    #barEdit {
+      display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
+      background:var(--ink); border-top:2px solid var(--dark);
+      align-items:center; justify-content:space-around; padding:0 20px; z-index:10;
+    }
+    #barEdit.visible { display:flex; }
+    #btnEditRec.recording .btn-icon { background:#bb0000; border-color:#ff4444; animation:pulse 1s ease-in-out infinite; }
+    #btnEditRec.recording .btn-label { color:#ff6666; }
+    @media (max-width:767px) {
+      .edit-src-pill, .edit-layer-bypass, .edit-layer-btn, .edit-add-btn { min-height:40px; }
+      .edit-mini-row input[type="range"] { height:40px; }
+    }
+
     /* ── Pythonization ── */
     #pythonSection { padding:6px 12px 8px; border-top:1px solid var(--dark); }
     .py-header { color:var(--mid); font-size:9px; letter-spacing:2px; text-transform:uppercase; margin-bottom:6px; }
@@ -2219,7 +2290,8 @@
       }
       #btnExtAudioToggle.active { border-color:var(--paper); color:var(--paper); background:rgba(155,188,15,.1); }
       #btnExtCapture {
-        position:fixed; bottom:104px; right:12px; z-index:50;
+        /* media altura del borde derecho — libre de bottom bars, HUDs (FLOW/FUSION) y del panel de audio */
+        position:fixed; top:50%; transform:translateY(-50%); right:12px; z-index:50;
         background:var(--paper); color:var(--ink); border:none;
         font-family:monospace; font-size:11px; font-weight:bold; letter-spacing:1px;
         padding:8px 12px; cursor:pointer; display:none;
@@ -2561,6 +2633,7 @@
   <button class="tab"        id="tabScrash">⚡ GLITCH</button>
   <button class="tab"        id="tabFusion">✧ FUSION</button>
   <button class="tab"        id="tabSflow" >✦ FLOW</button>
+  <button class="tab"        id="tabEdit"  >🎛 EDIT</button>
 </div>
 
 <canvas id="display"></canvas>
@@ -3621,6 +3694,48 @@
     <span class="btn-label">FLIP</span>
   </button>
 </div>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     EDIT — F5: layered pipeline editor. Source (cam/photo/video/audio)
+     → up to 3 chained CAM/GLITCH steps via runPipeline. Non-destructive.
+════════════════════════════════════════════════════════════════ -->
+<div id="editArea">
+  <canvas id="editCanvas" width="1024" height="768"></canvas>
+</div>
+
+<div id="editHUD">
+  <div class="edit-source-row">
+    <button class="edit-src-pill active" id="editSrcCam"   data-edit-src="cam">📷 CAM</button>
+    <button class="edit-src-pill"        id="editSrcPhoto" data-edit-src="photo">🖼 FOTO</button>
+    <button class="edit-src-pill"        id="editSrcVideo" data-edit-src="video">🎞 VIDEO</button>
+    <button class="edit-src-pill"        id="editSrcAudio" data-edit-src="audio">🎵 AUDIO</button>
+  </div>
+  <div id="editLayersList"></div>
+  <div class="edit-add-row">
+    <button class="edit-add-btn" id="btnEditAddCam">+ CAPA CAM</button>
+    <button class="edit-add-btn" id="btnEditAddGlitch">+ CAPA GLITCH</button>
+  </div>
+  <div class="edit-hint" id="editCamHint">familia CAM activa: —</div>
+  <div class="edit-glitch-mini">
+    <div class="edit-mini-row"><span class="emr-lbl">WAVE</span><input type="range" id="editWave" min="0" max="30" value="0"><span class="emr-val" id="vEditWave">0</span></div>
+    <div class="edit-mini-row"><span class="emr-lbl">CHROMA</span><input type="range" id="editChroma" min="0" max="50" value="0"><span class="emr-val" id="vEditChroma">0</span></div>
+    <div class="edit-mini-row"><span class="emr-lbl">CHAOS</span><input type="range" id="editChaos" min="0" max="100" value="0"><span class="emr-val" id="vEditChaos">0</span></div>
+  </div>
+</div>
+
+<div id="barEdit">
+  <button class="btn" id="btnEditSnap">
+    <div class="btn-icon">●</div>
+    <span class="btn-label">SNAP</span>
+  </button>
+  <button class="btn" id="btnEditRec">
+    <div class="btn-icon">⏺</div>
+    <span class="btn-label">REC</span>
+  </button>
+</div>
+
+<input type="file" id="editFileInput" accept="image/*,video/*" style="display:none;">
+<video id="editVideoEl" playsinline muted loop autoplay class="media-probe"></video>
 
 <!-- SONO audio progress bar -->
 <div id="sonoProgress">
@@ -12037,11 +12152,13 @@ function switchTab(tab) {
   document.getElementById('tabScrash').classList.toggle('active', tab==='scrash');
   document.getElementById('tabFusion').classList.toggle('active', tab==='fusion');
   document.getElementById('tabSflow' ).classList.toggle('active', tab==='sflow');
+  document.getElementById('tabEdit'  ).classList.toggle('active', tab==='edit');
 
   const isCam = tab==='cam', isUp = tab==='up', isAscii = tab==='ascii';
   const isSono = tab==='sono', isWmp = tab==='wmp', isScrash = tab==='scrash';
   const isFusion = tab==='fusion';
   const isSflow = tab==='sflow';
+  const isEdit = tab==='edit';
   if (!isAscii) _resetTypoTransient(false);
   if (!isAscii) asciiRecordingHighQuality = false;
   display.style.display = isCam ? 'block' : 'none';
@@ -12051,6 +12168,7 @@ function switchTab(tab) {
   document.getElementById('scrashArea' ).classList.toggle('visible', isScrash);
   document.getElementById('fusionArea' ).classList.toggle('visible', isFusion);
   document.getElementById('sflowArea'  ).classList.toggle('visible', isSflow);
+  document.getElementById('editArea'   ).classList.toggle('visible', isEdit);
   document.getElementById('uploadSection').classList.toggle('visible', isUp);
   const _scrashCtrlsOn = isScrash || (isUp && uploadMode === 'scrash');
   if (_scrashCtrlsOn) _closeCamPanels();
@@ -12068,7 +12186,10 @@ function switchTab(tab) {
   document.getElementById('fusionHUD').classList.toggle('visible', isFusion);
   document.getElementById('barSflow' ).classList.toggle('visible', isSflow);
   document.getElementById('sflowHUD' ).classList.toggle('visible', isSflow);
+  document.getElementById('barEdit'  ).classList.toggle('visible', isEdit);
+  document.getElementById('editHUD'  ).classList.toggle('visible', isEdit);
   if (window._sfSyncHudLayout) window._sfSyncHudLayout();
+  if (window._editSyncHudLayout) window._editSyncHudLayout();
   // Permission overlays live outside their areas — hide them on tab exit
   if (!isSono) document.getElementById('sonoPerm').classList.remove('visible');
   if (!isWmp)  document.getElementById('wmpPerm' ).classList.remove('visible');
@@ -12076,7 +12197,7 @@ function switchTab(tab) {
   document.getElementById('camFpsCtrl').style.display = isCam ? 'flex' : 'none';
   document.getElementById('camAspect').style.display  = (isCam || isAscii) ? 'flex' : 'none';
   _syncCamZoomUI();
-  document.getElementById('palettes' ).style.display = (isUp || isSono || isWmp || isScrash || isAscii || isSflow || isFusion) ? 'none' : '';
+  document.getElementById('palettes' ).style.display = (isUp || isSono || isWmp || isScrash || isAscii || isSflow || isFusion || isEdit) ? 'none' : '';
   fpsEl.style.display = isCam ? '' : 'none';
   // Stop SF cam when leaving the tab
   if (!isSflow) _sflowStop();
@@ -12108,6 +12229,11 @@ function switchTab(tab) {
     if (typeof _syncFusionFamPills === 'function') _syncFusionFamPills();
   }
 
+  // EDIT: own rAF loop, stop the recorder if leaving mid-take, sync layers/source/camera on entry
+  editRunning = isEdit;
+  if (!isEdit && typeof window._editStopRecording === 'function') window._editStopRecording();
+  if (isEdit && typeof window._editOnEnter === 'function') window._editOnEnter();
+
   cameraRunning = isCam; asciiRunning = isAscii;
   // Restart camera if it was stopped by a file upload
   if (isCam || isAscii || isScrash || isFusion) inputMode = 'camera';
@@ -12125,6 +12251,7 @@ document.getElementById('tabWmp'  ).addEventListener('click', () => switchTab('w
 document.getElementById('tabScrash').addEventListener('click', () => switchTab('scrash'));
 document.getElementById('tabFusion').addEventListener('click', () => switchTab('fusion'));
 document.getElementById('tabSflow' ).addEventListener('click', () => switchTab('sflow'));
+document.getElementById('tabEdit'  ).addEventListener('click', () => switchTab('edit'));
 window.addEventListener('resize', _syncCamMobileUtilityDock);
 _syncScrashHudVisibility();
 
@@ -12152,6 +12279,7 @@ const _EXPORT_CFG = {
   up:     { bottom: 96,  label: '💾 GUARDAR',     primary: 'btnSaveResult', secs: ['btnShareResult'],            reset: 'upBtnReset'    },
   scrash: null, // ● del nav es el único trigger de captura
   fusion: null, // ● del nav es el único trigger de captura
+  edit:   null, // barEdit (SNAP/REC) es el único trigger de captura
   sono:   { bottom: 246, label: '📷 SNAP',        primary: 'btnSonoCapture',secs: ['btnSonoShare'],              reset: null           },
   wmp:    null
 };
@@ -18260,6 +18388,15 @@ document.getElementById('btnAsciiGlitch').addEventListener('click', async () => 
 // this same object live every frame via a local `SFP` alias.
 window._sfParams = { flare: 50, density: 8, fill: 40, thresh: 50, dim: 60 };
 
+// ── EDIT (layered pipeline) state ───────────────────────────────────────
+// Declared globally (not inside the EDIT block further down, which runs
+// *after* loadSettings() executes) so saveSettings/loadSettings can read &
+// restore it; the EDIT block's own editSource/editSteps read this object
+// once on init (see _initEdit below). photo/video sources are never
+// persisted with their actual file — only the type, and a fallback to
+// 'cam' happens on restore if no file is present (see _initEdit).
+window._editPipeline = { source: { type: 'cam' }, steps: [{ engine: 'glitch', on: true }] };
+
 function saveSettings() {
   try {
     localStorage.setItem('flipSettings', JSON.stringify({
@@ -18279,6 +18416,7 @@ function saveSettings() {
       camFpsTarget, camFpsEnabled, uploadFPS, asciiFont,
       scrAudioReactVal,
       _sfParams: window._sfParams,
+      editPipeline: window._editPipeline,
     }));
   } catch(_) {}
 }
@@ -18482,6 +18620,22 @@ function loadSettings() {
       _sfSyncSliderEl('sflowFill',    'vSflowFill',    window._sfParams.fill,    '%');
       _sfSyncSliderEl('sflowThresh',  'vSflowThresh',  window._sfParams.thresh,  '%');
       _sfSyncSliderEl('sflowDim',     'vSflowDim',     window._sfParams.dim,     '%');
+    }
+    // EDIT layered pipeline (window._editPipeline — see declaration near
+    // saveSettings; the EDIT block below reads this object once on init,
+    // since editSource/editSteps are declared later via `let`). Validates
+    // engines/max-3/source type; photo/video never restore an actual file
+    // — _initEdit falls back to 'cam' with a toast when it finds those.
+    if (s.editPipeline && typeof s.editPipeline === 'object') {
+      const validSrc = ['cam','photo','video','audio'];
+      const srcType = validSrc.includes(s.editPipeline.source?.type) ? s.editPipeline.source.type : 'cam';
+      let steps = Array.isArray(s.editPipeline.steps) ? s.editPipeline.steps : [];
+      steps = steps
+        .filter(st => st && (st.engine === 'cam' || st.engine === 'glitch'))
+        .slice(0, 3)
+        .map(st => ({ engine: st.engine, on: st.on !== false }));
+      if (!steps.length) steps = [{ engine: 'glitch', on: true }];
+      window._editPipeline = { source: { type: srcType }, steps };
     }
   } catch(_) {}
 }
@@ -19584,6 +19738,335 @@ function _fusionLoop(ts) {
   // Stop an in-flight recording if the user leaves FUSION
   window._fusionStopRecording = function () {
     if (_fuRecorder && _fuRecorder.state !== 'inactive') _stopRecorderSafely(_fuRecorder);
+  };
+})();
+
+// ════════════════════════════════════════════════════════════════════
+// EDIT — F5: layered pipeline editor. Choose a SOURCE (cam / photo /
+// video / audio) and stack up to 3 chainable engine steps (CAM family /
+// GLITCH), reorderable and bypassable, through the PIPELINE KEYSTONE
+// (runPipeline, see FLIP_STEP_ENGINES above). Own rAF loop, like FUSION
+// and FLOW. Non-destructive: the source media is only ever read into a
+// working canvas per frame, never mutated.
+//
+// GLITCH params in EDIT: rather than reopening #scrashControls (gated by
+// body.scrash-hud-open + activeTab==='scrash', not trivial to surface from
+// another tab cleanly), EDIT ships 3 mini-sliders (WAVE/CHROMA/CHAOS) that
+// write straight into the same globals _applyScrash reads (scrWaveVal,
+// scrChromaVal, scrChaosVal) and mirror the GLITCH tab's own sliders/spans
+// (#scrWave/#vScrWave etc) both ways where present. CAM family isn't
+// re-picked here — a clickable hint text shows the active family and jumps
+// to the CAM tab, per the phase-1 scope noted on FLIP_STEP_ENGINES.cam.
+// ════════════════════════════════════════════════════════════════════
+let editRunning = false;
+let editSource = { type: 'cam' };
+let editSteps = [{ engine: 'glitch', on: true }];
+let _editSrcCanvas = null;
+let _editPhotoImg = null;   // HTMLImageElement | ImageBitmap, source type:'photo'
+let _editLastFrameMs = 0;
+
+const editCanvas = document.getElementById('editCanvas');
+const ctxEdit = editCanvas.getContext('2d');
+const editVideoEl = document.getElementById('editVideoEl');
+
+// cover-fit draw: fills w×h cropping overflow, no stretch distortion.
+function _editDrawCover(ctx, srcEl, sw, sh, w, h) {
+  if (!sw || !sh) return;
+  const scale = Math.max(w / sw, h / sh);
+  const dw = sw * scale, dh = sh * scale;
+  ctx.drawImage(srcEl, (w - dw) / 2, (h - dh) / 2, dw, dh);
+}
+
+function _editGetSrcCanvas() {
+  const w = 640, h = 480;
+  if (!_editSrcCanvas) _editSrcCanvas = document.createElement('canvas');
+  if (_editSrcCanvas.width !== w || _editSrcCanvas.height !== h) { _editSrcCanvas.width = w; _editSrcCanvas.height = h; }
+  const ctx = _editSrcCanvas.getContext('2d');
+  if (editSource.type === 'cam') {
+    if (!vid.videoWidth) return null;
+    ctx.save();
+    if (facingMode === 'user') { ctx.translate(w, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(vid, 0, 0, w, h);
+    ctx.restore();
+    return _editSrcCanvas;
+  }
+  if (editSource.type === 'photo') {
+    if (!_editPhotoImg) return null;
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    const iw = _editPhotoImg.width || _editPhotoImg.naturalWidth;
+    const ih = _editPhotoImg.height || _editPhotoImg.naturalHeight;
+    _editDrawCover(ctx, _editPhotoImg, iw, ih, w, h);
+    return _editSrcCanvas;
+  }
+  if (editSource.type === 'video') {
+    if (!editVideoEl.videoWidth) return null;
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    _editDrawCover(ctx, editVideoEl, editVideoEl.videoWidth, editVideoEl.videoHeight, w, h);
+    return _editSrcCanvas;
+  }
+  if (editSource.type === 'audio') {
+    return _getExtAudioSourceFrame(w, h);
+  }
+  return null;
+}
+
+function _editLoop(ts) {
+  if (!editRunning) return;
+  const minInterval = 1000 / 30;
+  if (ts - _editLastFrameMs >= minInterval) {
+    const srcCanvas = _editGetSrcCanvas();
+    if (srcCanvas) {
+      const steps = editSteps.filter(s => s.on).map(s => ({ engine: s.engine, params: {} }));
+      const audio = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? FlipAudioReact.read() : null;
+      runPipeline(steps, srcCanvas, ctxEdit, audio, ts);
+    }
+    _editLastFrameMs = ts;
+  }
+  requestAnimationFrame(_editLoop);
+}
+
+(function _initEdit() {
+  // ── Restore persisted pipeline (window._editPipeline — see saveSettings/
+  // loadSettings). photo/video never persist an actual file: if the
+  // restored type is one of those, fall back to 'cam' with a soft toast
+  // once the DOM/tab is actually visited.
+  let _editRestoredNoFile = false;
+  const persisted = window._editPipeline;
+  if (persisted) {
+    editSteps = persisted.steps.map(s => ({ engine: s.engine, on: s.on !== false }));
+    if (persisted.source.type === 'photo' || persisted.source.type === 'video') {
+      editSource = { type: 'cam' };
+      _editRestoredNoFile = true;
+    } else {
+      editSource = { type: persisted.source.type };
+    }
+  }
+  _editSyncPersistedState();
+
+  function _editSyncPersistedState() {
+    window._editPipeline = {
+      source: { type: editSource.type },
+      steps: editSteps.map(s => ({ engine: s.engine, on: s.on })),
+    };
+  }
+  function _editSyncPersisted() {
+    _editSyncPersistedState();
+    saveSettings();
+  }
+
+  // ── Layer list UI ────────────────────────────────────────────────────
+  function _editLayerLabel(step) {
+    if (step.engine === 'cam') return 'CAM · ' + camFamily;
+    if (step.engine === 'glitch') return 'GLITCH';
+    return step.engine;
+  }
+  function _editRenderLayers() {
+    const list = document.getElementById('editLayersList');
+    list.innerHTML = '';
+    editSteps.forEach((step, i) => {
+      const row = document.createElement('div');
+      row.className = 'edit-layer-row' + (step.on ? '' : ' bypassed');
+      row.innerHTML = `
+        <button class="edit-layer-bypass${step.on ? ' on' : ''}" data-i="${i}" data-act="bypass" title="bypass">◉</button>
+        <span class="edit-layer-name">${_editLayerLabel(step)}</span>
+        <button class="edit-layer-btn" data-i="${i}" data-act="up" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="edit-layer-btn" data-i="${i}" data-act="down" ${i === editSteps.length - 1 ? 'disabled' : ''}>▼</button>
+        <button class="edit-layer-btn remove" data-i="${i}" data-act="remove">✕</button>
+      `;
+      list.appendChild(row);
+    });
+    const full = editSteps.length >= 3;
+    document.getElementById('btnEditAddCam').disabled = full;
+    document.getElementById('btnEditAddGlitch').disabled = full;
+    const hint = document.getElementById('editCamHint');
+    if (hint) hint.textContent = 'familia CAM activa: ' + camFamily + ' (toca para ir a CAM)';
+    if (window._editSyncHudLayout) window._editSyncHudLayout();
+  }
+
+  document.getElementById('editLayersList').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const i = +btn.dataset.i, act = btn.dataset.act;
+    if (act === 'bypass') { editSteps[i].on = !editSteps[i].on; }
+    else if (act === 'up' && i > 0) { const t = editSteps[i - 1]; editSteps[i - 1] = editSteps[i]; editSteps[i] = t; }
+    else if (act === 'down' && i < editSteps.length - 1) { const t = editSteps[i + 1]; editSteps[i + 1] = editSteps[i]; editSteps[i] = t; }
+    else if (act === 'remove') { editSteps.splice(i, 1); if (!editSteps.length) editSteps.push({ engine: 'glitch', on: true }); }
+    _editRenderLayers();
+    _editSyncPersisted();
+  });
+
+  document.getElementById('btnEditAddCam').addEventListener('click', () => {
+    if (editSteps.length >= 3) return;
+    editSteps.push({ engine: 'cam', on: true });
+    _editRenderLayers(); _editSyncPersisted();
+  });
+  document.getElementById('btnEditAddGlitch').addEventListener('click', () => {
+    if (editSteps.length >= 3) return;
+    editSteps.push({ engine: 'glitch', on: true });
+    _editRenderLayers(); _editSyncPersisted();
+  });
+  document.getElementById('editCamHint').addEventListener('click', () => switchTab('cam'));
+
+  // ── Source pills ─────────────────────────────────────────────────────
+  function _editSetSourcePill(type) {
+    document.querySelectorAll('.edit-src-pill').forEach(b => b.classList.toggle('active', b.dataset.editSrc === type));
+  }
+  document.getElementById('editSrcCam').addEventListener('click', () => {
+    editSource = { type: 'cam' };
+    _editSetSourcePill('cam');
+    if (!stream && !extAudioMode) startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+    _editSyncPersisted();
+  });
+  document.getElementById('editSrcPhoto').addEventListener('click', () => {
+    document.getElementById('editFileInput').click();
+  });
+  document.getElementById('editSrcVideo').addEventListener('click', () => {
+    document.getElementById('editFileInput').click();
+  });
+  document.getElementById('editSrcAudio').addEventListener('click', () => {
+    editSource = { type: 'audio' };
+    _editSetSourcePill('audio');
+    if (!((extAudioMode || extMicOnlyMode) && extAnalyser)) flipToast('🎙 Activá EXT AUDIO o el mic para reaccionar al sonido');
+    _editSyncPersisted();
+  });
+
+  document.getElementById('editFileInput').addEventListener('change', async e => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.type.startsWith('image/')) {
+      try {
+        let img;
+        if (window.createImageBitmap) img = await createImageBitmap(file);
+        else img = await new Promise((res, rej) => {
+          const im = new Image();
+          im.onload = () => res(im);
+          im.onerror = rej;
+          im.src = URL.createObjectURL(file);
+        });
+        _editPhotoImg = img;
+        editSource = { type: 'photo' };
+        _editSetSourcePill('photo');
+        _editSyncPersisted();
+      } catch (_) { flipToast('⚠ No se pudo cargar la imagen'); }
+    } else if (file.type.startsWith('video/')) {
+      editVideoEl.pause();
+      editVideoEl.src = URL.createObjectURL(file);
+      editVideoEl.loop = true; editVideoEl.muted = true; editVideoEl.playsInline = true;
+      try { await editVideoEl.play(); } catch (_) {}
+      editSource = { type: 'video' };
+      _editSetSourcePill('video');
+      _editSyncPersisted();
+    } else {
+      flipToast('⚠ Archivo no soportado');
+    }
+  });
+
+  // ── GLITCH mini-sliders — mirror scrWaveVal/scrChromaVal/scrChaosVal
+  // (the same globals _applyScrash reads) and, if present, the GLITCH
+  // tab's own #scrWave/#scrChroma/#scrChaos sliders + value spans.
+  function _editMiniSlider(id, valId, mirrorId, mirrorValId, setter) {
+    const el = document.getElementById(id), vEl = document.getElementById(valId);
+    el.addEventListener('input', () => {
+      setter(+el.value);
+      vEl.textContent = el.value;
+      const mEl = document.getElementById(mirrorId), mVEl = document.getElementById(mirrorValId);
+      if (mEl) mEl.value = el.value;
+      if (mVEl) mVEl.textContent = el.value;
+      saveSettings();
+      if (uploadMode === 'scrash' && lastUploadSrc) renderUploadPreview();
+    });
+  }
+  _editMiniSlider('editWave',   'vEditWave',   'scrWave',   'vScrWave',   v => { scrWaveVal = v; });
+  _editMiniSlider('editChroma', 'vEditChroma', 'scrChroma', 'vScrChroma', v => { scrChromaVal = v; });
+  _editMiniSlider('editChaos',  'vEditChaos',  'scrChaos',  'vScrChaos',  v => { scrChaosVal = v; });
+  function _editSyncMiniFromGlobals() {
+    const set = (id, vid, val) => {
+      const e = document.getElementById(id); if (e) e.value = val;
+      const v = document.getElementById(vid); if (v) v.textContent = val;
+    };
+    set('editWave', 'vEditWave', scrWaveVal);
+    set('editChroma', 'vEditChroma', scrChromaVal);
+    set('editChaos', 'vEditChaos', scrChaosVal);
+  }
+
+  // ── HUD layout sync: keeps #editArea's bottom clear of #editHUD ──────
+  window._editSyncHudLayout = function () {
+    const hud = document.getElementById('editHUD');
+    const h = (hud && hud.classList.contains('visible')) ? (hud.offsetHeight || 0) : 0;
+    document.documentElement.style.setProperty('--edit-hud-h', h + 'px');
+  };
+  new ResizeObserver(() => window._editSyncHudLayout()).observe(document.getElementById('editHUD'));
+
+  // ── Photo snap ───────────────────────────────────────────────────────
+  document.getElementById('btnEditSnap').addEventListener('click', async () => {
+    flash.classList.add('on'); setTimeout(() => flash.classList.remove('on'), 120);
+    await saveBlob(await _canvasToJpeg(editCanvas), _flipName('edit', 'jpg'));
+  });
+
+  // ── Video record — pattern copied from FUSION/FLOW's recorder flow ───
+  let _edRecorder = null, _edRecChunks = [], _edRecMime = '', _edRecTimer = null, _edRecJob = null;
+  const btnEditRec = document.getElementById('btnEditRec');
+  const _edRecResetUI = () => {
+    clearInterval(_edRecTimer); btnEditRec.style.color = '';
+    btnEditRec.classList.remove('recording');
+    btnEditRec.querySelector('.btn-icon').textContent = '⏺';
+    btnEditRec.querySelector('.btn-label').textContent = 'REC';
+  };
+  btnEditRec.addEventListener('click', async () => {
+    if (_edRecorder && _edRecorder.state !== 'inactive') { _stopRecorderSafely(_edRecorder); return; }
+    _edRecChunks = [];
+    try {
+      _edRecJob = await _createFlipRecordingJob(editCanvas, 30, 6_000_000, {});
+      _edRecorder = _edRecJob.recorder;
+      _edRecMime = _edRecJob.mime;
+    } catch (e) {
+      if (_edRecJob) { _edRecJob.cleanup(); _edRecJob = null; }
+      flipToast('⚠ Error: ' + e.message); return;
+    }
+    const releaseEdFinalize = _bindRecorderFinalize(_edRecorder, {
+      addChunk: chunk => _edRecChunks.push(chunk),
+      onFinalize: async () => {
+        releaseEdFinalize();
+        if (_edRecJob) { _edRecJob.cleanup(); _edRecJob = null; }
+        _edRecorder = null;
+        _edRecResetUI();
+        if (!_edRecChunks.length) { flipToast('⚠ No se pudo guardar el video EDIT.'); return; }
+        _edRecMime = _resolveRecordedMime(_edRecMime, _edRecChunks);
+        const blob = new Blob(_edRecChunks, { type: _edRecMime });
+        await saveBlob(blob, _flipName('edit', _videoExtFromMime(_edRecMime)));
+      }
+    });
+    _edRecorder.start(250);
+    let edS = 0;
+    _edRecTimer = setInterval(() => {
+      edS++;
+      const mm = String(edS / 60 | 0).padStart(2, '0'), ss = String(edS % 60).padStart(2, '0');
+      btnEditRec.querySelector('.btn-label').textContent = mm + ':' + ss;
+      if (edS >= 110) btnEditRec.style.color = '#ff4444';
+      if (edS >= 120) { clearInterval(_edRecTimer); _stopRecorderSafely(_edRecorder); }
+    }, 1000);
+    btnEditRec.classList.add('recording');
+    btnEditRec.querySelector('.btn-icon').textContent = '⏹';
+  });
+
+  window._editStopRecording = function () {
+    if (_edRecorder && _edRecorder.state !== 'inactive') _stopRecorderSafely(_edRecorder);
+  };
+
+  // ── Tab entry hook — called from switchTab() when isEdit ─────────────
+  window._editOnEnter = function () {
+    _editRenderLayers();
+    _editSetSourcePill(editSource.type);
+    _editSyncMiniFromGlobals();
+    if (_editRestoredNoFile) {
+      _editRestoredNoFile = false;
+      flipToast('EDIT: la fuente guardada (foto/video) no persiste el archivo — volviendo a CAM');
+    }
+    if (editSource.type === 'cam' && !stream && !extAudioMode) {
+      startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+    }
+    requestAnimationFrame(_editLoop);
   };
 })();
 

@@ -1,4 +1,4 @@
-const CACHE = 'flipnote-filter-v68-mic-blindado-flow-params';
+const CACHE = 'flipnote-filter-v69-flip-edit';
 const ASSETS = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png', './pretext.js',
   './fonts/Bloom-Regular.otf', './fonts/BNMonica.otf', './fonts/Fluidic-Regular.otf', './fonts/Canterbury.ttf'];
 
