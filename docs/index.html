@@ -1557,6 +1557,44 @@
       }
     }
 
+    /* ══════════════════════════════════════════════════
+       FUSION — live camera → CAM family → GLITCH pipeline
+    ══════════════════════════════════════════════════ */
+    #fusionArea {
+      display:none; position:fixed; top:40px; bottom:calc(96px + var(--fusion-hud-h, 76px)); left:0; right:0;
+      align-items:center; justify-content:center; background:#000;
+    }
+    #fusionArea.visible { display:flex; }
+    #fusionCanvas {
+      display:block; max-width:100%; max-height:100%;
+      image-rendering:pixelated; image-rendering:crisp-edges; background:#000;
+    }
+    #barFusion {
+      display:none; position:fixed; bottom:0; left:0; right:0;
+      height:96px; background:var(--ink); border-top:2px solid var(--paper);
+      align-items:center; justify-content:space-around; padding:0 20px; z-index:10;
+    }
+    #barFusion.visible { display:flex; }
+    #btnFusionRec.recording .btn-icon { background:#bb0000; border-color:#ff4444; animation:pulse 1s ease-in-out infinite; }
+    #btnFusionRec.recording .btn-label { color:#ff6666; }
+    #fusionHUD {
+      display:none; position:fixed; bottom:96px; left:0; right:0; height:auto;
+      background:var(--ink); border-top:1px solid var(--dark);
+      flex-direction:column; gap:6px; padding:8px 14px; z-index:9;
+    }
+    #fusionHUD.visible { display:flex; }
+    .fusion-fam-row { display:flex; gap:4px; flex-wrap:wrap; }
+    .fusion-fam-pill {
+      flex:1; min-width:52px; background:none; border:1px solid var(--dark); color:var(--mid);
+      font-family:monospace; font-size:9px; font-weight:bold; letter-spacing:.5px;
+      padding:5px 4px; cursor:pointer; transition:.1s; white-space:nowrap;
+    }
+    .fusion-fam-pill.active { background:var(--paper); color:var(--ink); border-color:var(--paper); }
+    .fusion-react-row { display:flex; align-items:center; gap:6px; }
+    .fusion-react-row span.fr-lbl { color:var(--paper); font-family:monospace; font-size:9px; letter-spacing:1px; min-width:60px; flex-shrink:0; }
+    .fusion-react-row span.fr-val { color:var(--paper); font-family:monospace; font-size:9px; min-width:34px; text-align:right; flex-shrink:0; }
+    .fusion-react-row input[type="range"] { flex:1; height:3px; accent-color:var(--paper); cursor:pointer; }
+
     /* ── Upload section ── */
     #uploadSection {
       display:none; position:fixed; top:40px; bottom:96px; left:0; right:0;
@@ -2466,6 +2504,7 @@
   <button class="tab"        id="tabSono" >🔊 SONO</button>
   <button class="tab"        id="tabWmp"  >📺 WMP</button>
   <button class="tab"        id="tabScrash">⚡ GLITCH</button>
+  <button class="tab"        id="tabFusion">✧ FUSION</button>
   <button class="tab"        id="tabSflow" >✦ FLOW</button>
 </div>
 
@@ -3445,6 +3484,33 @@
 </div>
 
 <!-- ═══════════════════════════════════════════════════════════════
+     FUSION — live cam → CAM family → GLITCH pipeline (F3)
+════════════════════════════════════════════════════════════════ -->
+<div id="fusionArea">
+  <canvas id="fusionCanvas" width="1024" height="768"></canvas>
+</div>
+
+<div id="fusionHUD">
+  <div class="fusion-fam-row" id="fusionFamRow"></div>
+  <div class="fusion-react-row">
+    <span class="fr-lbl">REACT</span>
+    <input type="range" id="fusionReact" min="0" max="300" step="10" value="150">
+    <span class="fr-val" id="vFusionReact">150%</span>
+  </div>
+</div>
+
+<div id="barFusion">
+  <button class="btn" id="btnFusionSnap">
+    <div class="btn-icon">●</div>
+    <span class="btn-label">SNAP</span>
+  </button>
+  <button class="btn" id="btnFusionRec">
+    <div class="btn-icon">⏺</div>
+    <span class="btn-label">REC</span>
+  </button>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════
      SILHOUETTE FLOW — isolated standalone component
      Own video element, own canvas, zero relation to other modes
 ════════════════════════════════════════════════════════════════ -->
@@ -3679,6 +3745,7 @@ const FLIP_OS_MODULES = [
   { key: 'sono', internalTab: 'sono', title: 'SONO', short: 'SON' },
   { key: 'wmp', internalTab: 'wmp', title: 'WMP', short: 'WMP' },
   { key: 'scrash', internalTab: 'scrash', title: 'GLITCH', short: 'GLT' },
+  { key: 'fusion', internalTab: 'fusion', title: 'FUSION', short: 'FSN' },
   { key: 'slht', internalTab: 'sflow', title: 'SLHT', short: 'SLT' },
 ];
 const _flipOsState = {
@@ -5184,17 +5251,21 @@ function _updateFreePal() {
   _refreshPaletteDrivenView();
 }
 
+// Shared family setter — reused by the CAM family tray and FUSION's family pills
+// (F3) so both drive the same global camFamily the pipeline's cam step reads.
+function _setCamFamily(fam) {
+  if (!CAM_FAMILIES[fam]) return;
+  camFamily = fam;
+  camVariant = _getCamFamilyConfig(fam).variants[0]?.id || 'STD';
+  camFamilyTrayOpen = false;
+  camEditOpen = false;
+  _applyCamState();
+  saveSettings();
+  if (typeof _syncFusionFamPills === 'function') _syncFusionFamPills();
+}
+
 document.querySelectorAll('.cam-fam-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const fam = btn.dataset.family;
-    if (!CAM_FAMILIES[fam]) return;
-    camFamily = fam;
-    camVariant = _getCamFamilyConfig(fam).variants[0]?.id || 'STD';
-    camFamilyTrayOpen = false;
-    camEditOpen = false;
-    _applyCamState();
-    saveSettings();
-  });
+  btn.addEventListener('click', () => _setCamFamily(btn.dataset.family));
 });
 document.getElementById('camVariantPill').addEventListener('click', e => {
   const btn = e.target.closest('.cam-var-btn');
@@ -11885,10 +11956,12 @@ function switchTab(tab) {
   document.getElementById('tabSono' ).classList.toggle('active', tab==='sono');
   document.getElementById('tabWmp'  ).classList.toggle('active', tab==='wmp');
   document.getElementById('tabScrash').classList.toggle('active', tab==='scrash');
+  document.getElementById('tabFusion').classList.toggle('active', tab==='fusion');
   document.getElementById('tabSflow' ).classList.toggle('active', tab==='sflow');
 
   const isCam = tab==='cam', isUp = tab==='up', isAscii = tab==='ascii';
   const isSono = tab==='sono', isWmp = tab==='wmp', isScrash = tab==='scrash';
+  const isFusion = tab==='fusion';
   const isSflow = tab==='sflow';
   if (!isAscii) _resetTypoTransient(false);
   if (!isAscii) asciiRecordingHighQuality = false;
@@ -11897,6 +11970,7 @@ function switchTab(tab) {
   document.getElementById('sonoArea'   ).classList.toggle('visible', isSono);
   document.getElementById('wmpArea'    ).classList.toggle('visible', isWmp);
   document.getElementById('scrashArea' ).classList.toggle('visible', isScrash);
+  document.getElementById('fusionArea' ).classList.toggle('visible', isFusion);
   document.getElementById('sflowArea'  ).classList.toggle('visible', isSflow);
   document.getElementById('uploadSection').classList.toggle('visible', isUp);
   const _scrashCtrlsOn = isScrash || (isUp && uploadMode === 'scrash');
@@ -11911,6 +11985,8 @@ function switchTab(tab) {
   document.getElementById('barWmp'   ).classList.toggle('visible', isWmp);
   document.getElementById('wmpHUD'   ).classList.toggle('visible', isWmp);
   document.getElementById('barScrash').classList.toggle('visible', isScrash);
+  document.getElementById('barFusion').classList.toggle('visible', isFusion);
+  document.getElementById('fusionHUD').classList.toggle('visible', isFusion);
   document.getElementById('barSflow' ).classList.toggle('visible', isSflow);
   // Permission overlays live outside their areas — hide them on tab exit
   if (!isSono) document.getElementById('sonoPerm').classList.remove('visible');
@@ -11919,7 +11995,7 @@ function switchTab(tab) {
   document.getElementById('camFpsCtrl').style.display = isCam ? 'flex' : 'none';
   document.getElementById('camAspect').style.display  = (isCam || isAscii) ? 'flex' : 'none';
   _syncCamZoomUI();
-  document.getElementById('palettes' ).style.display = (isUp || isSono || isWmp || isScrash || isAscii || isSflow) ? 'none' : '';
+  document.getElementById('palettes' ).style.display = (isUp || isSono || isWmp || isScrash || isAscii || isSflow || isFusion) ? 'none' : '';
   fpsEl.style.display = isCam ? '' : 'none';
   // Stop SF cam when leaving the tab
   if (!isSflow) _sflowStop();
@@ -11944,12 +12020,20 @@ function switchTab(tab) {
   if (!isScrash) exitScrash();
   if (isScrash)  enterScrash();
 
+  // FUSION: own rAF loop, stop the recorder if leaving mid-take, sync family pills on entry
+  fusionRunning = isFusion;
+  if (!isFusion && typeof _fusionStopRecording === 'function') _fusionStopRecording();
+  if (isFusion) {
+    if (typeof _syncFusionFamPills === 'function') _syncFusionFamPills();
+  }
+
   cameraRunning = isCam; asciiRunning = isAscii;
   // Restart camera if it was stopped by a file upload
-  if (isCam || isAscii || isScrash) inputMode = 'camera';
-  if ((isCam || isAscii || isScrash) && !stream && !extAudioMode) startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+  if (isCam || isAscii || isScrash || isFusion) inputMode = 'camera';
+  if ((isCam || isAscii || isScrash || isFusion) && !stream && !extAudioMode) startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
   if (isCam   && (stream || (extAudioMode && extAnalyser))) requestAnimationFrame(cameraLoop);
   if (isAscii && (stream || (extAudioMode && extAnalyser) || asciiStaticSrc)) requestAnimationFrame(asciiLoop);
+  if (isFusion && (stream || (extAudioMode && extAnalyser))) requestAnimationFrame(_fusionLoop);
 }
 
 document.getElementById('tabCam'  ).addEventListener('click', () => switchTab('cam'));
@@ -11958,6 +12042,7 @@ document.getElementById('tabAscii').addEventListener('click', () => switchTab('a
 document.getElementById('tabSono' ).addEventListener('click', () => switchTab('sono'));
 document.getElementById('tabWmp'  ).addEventListener('click', () => switchTab('wmp'));
 document.getElementById('tabScrash').addEventListener('click', () => switchTab('scrash'));
+document.getElementById('tabFusion').addEventListener('click', () => switchTab('fusion'));
 document.getElementById('tabSflow' ).addEventListener('click', () => switchTab('sflow'));
 window.addEventListener('resize', _syncCamMobileUtilityDock);
 _syncScrashHudVisibility();
@@ -11985,6 +12070,7 @@ const _EXPORT_CFG = {
   ascii:  null, // ● del nav es el único trigger de captura
   up:     { bottom: 96,  label: '💾 GUARDAR',     primary: 'btnSaveResult', secs: ['btnShareResult'],            reset: 'upBtnReset'    },
   scrash: null, // ● del nav es el único trigger de captura
+  fusion: null, // ● del nav es el único trigger de captura
   sono:   { bottom: 246, label: '📷 SNAP',        primary: 'btnSonoCapture',secs: ['btnSonoShare'],              reset: null           },
   wmp:    null
 };
@@ -12112,9 +12198,13 @@ const FLIP_NAV_CFG = {
     { icon: '↑',                               label: 'SHARE', center: false, click: () => _navClick('btnScrashShare') },
     { icon: '↺',                               label: 'RESET', center: false, click: () => _navClick('btnScrashReset') },
   ],
+  fusion: () => [
+    { icon: _navIcon('btnFusionSnap') || '●', label: 'SNAP', center: true,  click: () => _navClick('btnFusionSnap') },
+    { icon: _navIcon('btnFusionRec')  || '⏺', label: 'REC',  center: false, click: () => _navClick('btnFusionRec')  },
+  ],
 };
 
-const _OLD_BARS = ['barCam','barUpload','barAscii','barSono','barWmp','barScrash'];
+const _OLD_BARS = ['barCam','barUpload','barAscii','barSono','barWmp','barScrash','barFusion'];
 let _navObserver = null;
 
 function _syncNavButtonFromSource(srcId, dstBtn, fallbackLabel = '') {
@@ -12164,6 +12254,7 @@ function renderFlipNav(mode) {
   const _syncPairs = mode === 'cam'    ? [['btnRecord', 0], ['btnCapture', 1]]
                    : mode === 'ascii'  ? [['btnAsciiMode', 0], ['btnAsciiCapture', 1]]
                    : mode === 'scrash' ? [['btnScrashMode', 0], ['btnScrashSnap', 1]]
+                   : mode === 'fusion' ? [['btnFusionRec', 1]]
                    : [];
   if (_syncPairs.length) {
     const navBtns = nav.querySelectorAll('button');
@@ -17387,6 +17478,9 @@ async function startExtAudio(deviceId) {
   } else if (activeTab === 'scrash') {
     if (!scrashRunning) { scrashRunning = true; _scrStartT = null; }
     if (!_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
+  } else if (activeTab === 'fusion') {
+    fusionRunning = true;
+    requestAnimationFrame(_fusionLoop);
   } else if (activeTab === 'sflow') {
     if (typeof window._sflowStartExtAudio === 'function') window._sflowStartExtAudio();
   }
@@ -17413,6 +17507,7 @@ async function stopExtAudio() {
   asciiRunning  = false;
   sonoRunning   = false;
   wmpRunning    = false;
+  fusionRunning = false;
   document.body.classList.remove('ext-audio');
   document.getElementById('btnExtAudioToggle').textContent = '▶ ACTIVAR AUDIO EXTERNO';
   document.getElementById('btnExtAudioToggle').classList.remove('active');
@@ -17427,6 +17522,10 @@ async function stopExtAudio() {
     requestAnimationFrame(asciiLoop);
   } else if (activeTab === 'scrash') {
     await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+  } else if (activeTab === 'fusion') {
+    await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+    fusionRunning = true;
+    requestAnimationFrame(_fusionLoop);
   } else if (activeTab === 'sflow') {
     // Don't force camera — FLOW starts via its own CAM button as usual.
     if (typeof window._sflowStop === 'function') window._sflowStop();
@@ -18826,6 +18925,162 @@ if (screen.width > 768) {
     }, 200);
   }).observe(document.getElementById('sflowArea'));
 }
+
+// ════════════════════════════════════════════════════════════════════
+// FUSION — F3: live camera → CAM family → GLITCH, chained through the
+// PIPELINE KEYSTONE (runPipeline). Own rAF loop; reuses the global camera
+// (vid/stream), the global camFamily (via _setCamFamily), and the global
+// GLITCH audio-react intensity (scrAudioReactVal) so FUSION and GLITCH stay
+// in sync. No override of per-frame family — see FLIP_STEP_ENGINES.cam note.
+// ════════════════════════════════════════════════════════════════════
+let fusionRunning = false;
+let _fusionSrc = null;
+let _fusionLastFrameMs = 0;
+const fusionCanvas = document.getElementById('fusionCanvas');
+const ctxFusion = fusionCanvas.getContext('2d');
+
+// Resolve this frame's source canvas: live video (mirrored when the front
+// camera is active — the pipeline's cam step always renders with mirror:false,
+// so mirroring has to be baked into the source here) or, with no camera, the
+// EXT AUDIO waveform frame. Returns null when neither is available.
+function _fusionGetSrcCanvas() {
+  const w = 640, h = 480;
+  if (!_fusionSrc) _fusionSrc = document.createElement('canvas');
+  if (_fusionSrc.width !== w || _fusionSrc.height !== h) { _fusionSrc.width = w; _fusionSrc.height = h; }
+  if (vid.videoWidth) {
+    const fctx = _fusionSrc.getContext('2d');
+    fctx.save();
+    if (facingMode === 'user') { fctx.translate(w, 0); fctx.scale(-1, 1); }
+    fctx.drawImage(vid, 0, 0, w, h);
+    fctx.restore();
+    return _fusionSrc;
+  }
+  if (extAudioMode && extAnalyser) return _getExtAudioSourceFrame(w, h);
+  return null;
+}
+
+function _fusionLoop(ts) {
+  if (!fusionRunning) return;
+  const minInterval = 1000 / 30;
+  if (ts - _fusionLastFrameMs >= minInterval) {
+    const srcCanvas = _fusionGetSrcCanvas();
+    if (srcCanvas) {
+      runPipeline(
+        [{ engine: 'cam' }, { engine: 'glitch' }],
+        srcCanvas,
+        ctxFusion,
+        (extAudioMode && extAnalyser) ? FlipAudioReact.read() : null,
+        ts
+      );
+    }
+    _fusionLastFrameMs = ts;
+  }
+  requestAnimationFrame(_fusionLoop);
+}
+
+(function _initFusion() {
+  // ── Family pills — mirrors CAM's family list, drives the same global
+  // camFamily via the shared _setCamFamily() setter (grep it: it's the
+  // function the CAM family tray buttons call too).
+  const famRow = document.getElementById('fusionFamRow');
+  Object.keys(CAM_FAMILIES).forEach(fam => {
+    const btn = document.createElement('button');
+    btn.className = 'fusion-fam-pill' + (fam === camFamily ? ' active' : '');
+    btn.textContent = CAM_FAMILIES[fam].label;
+    btn.dataset.family = fam;
+    btn.addEventListener('click', () => _setCamFamily(fam));
+    famRow.appendChild(btn);
+  });
+  window._syncFusionFamPills = function () {
+    famRow.querySelectorAll('.fusion-fam-pill').forEach(b => {
+      b.classList.toggle('active', b.dataset.family === camFamily);
+    });
+  };
+
+  // ── AUDIO REACT — writes the same global scrAudioReactVal GLITCH uses,
+  // so the intensity slider is shared between FUSION and GLITCH. Keeps the
+  // GLITCH tab's own slider (if present in the DOM) in sync both ways.
+  const reactEl = document.getElementById('fusionReact');
+  const vReactEl = document.getElementById('vFusionReact');
+  reactEl.value = scrAudioReactVal;
+  vReactEl.textContent = scrAudioReactVal + '%';
+  reactEl.addEventListener('input', () => {
+    scrAudioReactVal = +reactEl.value;
+    vReactEl.textContent = scrAudioReactVal + '%';
+    const glitchEl = document.getElementById('scrAudioReact');
+    const glitchValEl = document.getElementById('vScrAudioReact');
+    if (glitchEl) glitchEl.value = scrAudioReactVal;
+    if (glitchValEl) glitchValEl.textContent = scrAudioReactVal + '%';
+    saveSettings();
+  });
+  // Keep FUSION's slider in sync if GLITCH's own slider changes it first.
+  const glitchReactEl = document.getElementById('scrAudioReact');
+  if (glitchReactEl) {
+    glitchReactEl.addEventListener('input', () => {
+      reactEl.value = scrAudioReactVal;
+      vReactEl.textContent = scrAudioReactVal + '%';
+    });
+  }
+
+  // ── Photo snap ────────────────────────────────────────────────────
+  document.getElementById('btnFusionSnap').addEventListener('click', async () => {
+    if (!fusionRunning) { flipToast('⚠ Enciende la cámara primero'); return; }
+    flash.classList.add('on'); setTimeout(() => flash.classList.remove('on'), 120);
+    await saveBlob(await _canvasToJpeg(fusionCanvas), _flipName('fusion', 'jpg'));
+  });
+
+  // ── Video record — pattern copied from FLOW's btnSflowRec ──────────
+  let _fuRecorder = null, _fuRecChunks = [], _fuRecMime = '', _fuRecTimer = null, _fuRecJob = null;
+  const btnFusionRec = document.getElementById('btnFusionRec');
+  const _fuRecResetUI = () => {
+    clearInterval(_fuRecTimer); btnFusionRec.style.color = '';
+    btnFusionRec.classList.remove('recording');
+    btnFusionRec.querySelector('.btn-icon').textContent = '⏺';
+    btnFusionRec.querySelector('.btn-label').textContent = 'REC';
+  };
+  btnFusionRec.addEventListener('click', async () => {
+    if (_fuRecorder && _fuRecorder.state !== 'inactive') { _stopRecorderSafely(_fuRecorder); return; }
+    if (!fusionRunning) { flipToast('⚠ Enciende la cámara primero'); return; }
+    _fuRecChunks = [];
+    try {
+      _fuRecJob = await _createFlipRecordingJob(fusionCanvas, 30, 6_000_000, {});
+      _fuRecorder = _fuRecJob.recorder;
+      _fuRecMime = _fuRecJob.mime;
+    } catch (e) {
+      if (_fuRecJob) { _fuRecJob.cleanup(); _fuRecJob = null; }
+      flipToast('⚠ Error: ' + e.message); return;
+    }
+    const releaseFuFinalize = _bindRecorderFinalize(_fuRecorder, {
+      addChunk: chunk => _fuRecChunks.push(chunk),
+      onFinalize: async () => {
+        releaseFuFinalize();
+        if (_fuRecJob) { _fuRecJob.cleanup(); _fuRecJob = null; }
+        _fuRecorder = null;
+        _fuRecResetUI();
+        if (!_fuRecChunks.length) { flipToast('⚠ No se pudo guardar el video FUSION.'); return; }
+        _fuRecMime = _resolveRecordedMime(_fuRecMime, _fuRecChunks);
+        const blob = new Blob(_fuRecChunks, { type: _fuRecMime });
+        await saveBlob(blob, _flipName('fusion', _videoExtFromMime(_fuRecMime)));
+      }
+    });
+    _fuRecorder.start(250);
+    let fuS = 0;
+    _fuRecTimer = setInterval(() => {
+      fuS++;
+      const mm = String(fuS/60|0).padStart(2,'0'), ss = String(fuS%60).padStart(2,'0');
+      btnFusionRec.querySelector('.btn-label').textContent = mm + ':' + ss;
+      if (fuS >= 110) btnFusionRec.style.color = '#ff4444';
+      if (fuS >= 120) { clearInterval(_fuRecTimer); _stopRecorderSafely(_fuRecorder); }
+    }, 1000);
+    btnFusionRec.classList.add('recording');
+    btnFusionRec.querySelector('.btn-icon').textContent = '⏹';
+  });
+
+  // Stop an in-flight recording if the user leaves FUSION
+  window._fusionStopRecording = function () {
+    if (_fuRecorder && _fuRecorder.state !== 'inactive') _stopRecorderSafely(_fuRecorder);
+  };
+})();
 
 // ════════════════════════════════════════════════════════════════════
 // SERVICE WORKER
