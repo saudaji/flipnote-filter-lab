@@ -1882,10 +1882,26 @@
        SILHOUETTE FLOW — isolated component
     ══════════════════════════════════════════════════ */
     #sflowArea {
-      display:none; position:fixed; top:40px; bottom:96px; left:0; right:0;
+      display:none; position:fixed; top:40px; bottom:calc(96px + var(--sflow-hud-h, 0px)); left:0; right:0;
       background:#000; align-items:center; justify-content:center;
     }
     #sflowArea.visible { display:flex; }
+    #sflowHUD {
+      display:none; position:fixed; bottom:96px; left:0; right:0; height:auto;
+      background:var(--ink); border-top:1px solid var(--dark);
+      flex-direction:column; gap:6px; padding:8px 14px; z-index:9;
+    }
+    #sflowHUD.visible { display:flex; }
+    .sflow-hud-row { display:flex; align-items:center; gap:6px; }
+    .sflow-hud-row .sfh-lbl { color:var(--paper); font-family:monospace; font-size:9px; letter-spacing:1px; min-width:56px; flex-shrink:0; }
+    .sflow-hud-row .sfh-val { color:var(--paper); font-family:monospace; font-size:9px; min-width:32px; text-align:right; flex-shrink:0; }
+    .sflow-hud-row input[type="range"] { flex:1; height:3px; accent-color:var(--paper); cursor:pointer; }
+    #btnSflowReset {
+      align-self:flex-end; background:none; border:1px solid var(--dark); color:var(--mid);
+      font-family:monospace; font-size:9px; font-weight:bold; letter-spacing:1px;
+      padding:4px 10px; cursor:pointer; transition:.1s;
+    }
+    #btnSflowReset:active { background:var(--dark); }
     #sflowVid { display:none; position:absolute; }
     #sflowCanvas {
       display:block; max-width:100%; max-height:100%;
@@ -1972,6 +1988,11 @@
       .sc-row input[type="range"] { height:44px; }
       .sc-row input[type="range"]::-webkit-slider-thumb { width:28px; height:28px; }
       .sc-row input[type="range"]::-moz-range-thumb { width:28px; height:28px; }
+      .sflow-hud-row { min-height:44px; }
+      .sflow-hud-row input[type="range"] { height:44px; }
+      .sflow-hud-row input[type="range"]::-webkit-slider-thumb { width:28px; height:28px; }
+      .sflow-hud-row input[type="range"]::-moz-range-thumb { width:28px; height:28px; }
+      #btnSflowReset { min-height:36px; }
       .wmp-ctrl { min-height:44px; display:flex; align-items:center; }
       .wmp-ctrl input[type="range"] { height:44px; }
       .wmp-ctrl input[type="range"]::-webkit-slider-thumb { width:28px; height:28px; }
@@ -2222,7 +2243,14 @@
       display: flex; align-items: center; justify-content: center;
       backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
     }
-    #btnMicMobile.active { border-color:var(--paper); background:rgba(155,188,15,.18); box-shadow:0 8px 24px rgba(155,188,15,.25); }
+    #btnMicMobile { --mic-level: 0; }
+    #btnMicMobile.active {
+      border-color:var(--paper); background:rgba(155,188,15,.18);
+      box-shadow:0 8px 24px rgba(155,188,15,.25),
+        0 0 calc(4px + var(--mic-level) * 20px) calc(1px + var(--mic-level) * 6px)
+        rgba(155,188,15, calc(0.25 + var(--mic-level) * 0.75));
+      transition: box-shadow 120ms linear;
+    }
     /* Pending: micEnabled was true on load but iOS needs a fresh tap gesture to resume the AudioContext */
     #btnMicMobile.pending { animation: micPendingPulse 1.6s ease-in-out infinite; }
     @keyframes micPendingPulse {
@@ -3546,6 +3574,15 @@
   <!-- hidden video feeds MediaPipe only -->
   <video id="sflowVid" playsinline muted autoplay></video>
   <canvas id="sflowCanvas"></canvas>
+</div>
+
+<div id="sflowHUD">
+  <div class="sflow-hud-row"><span class="sfh-lbl">FLARE</span><input type="range" id="sflowFlare" min="0" max="100" step="5" value="50"><span class="sfh-val" id="vSflowFlare">50%</span></div>
+  <div class="sflow-hud-row"><span class="sfh-lbl">DENSITY</span><input type="range" id="sflowDensity" min="6" max="14" step="1" value="8"><span class="sfh-val" id="vSflowDensity">8px</span></div>
+  <div class="sflow-hud-row"><span class="sfh-lbl">FILL</span><input type="range" id="sflowFill" min="0" max="100" step="5" value="40"><span class="sfh-val" id="vSflowFill">40%</span></div>
+  <div class="sflow-hud-row"><span class="sfh-lbl">THRESH</span><input type="range" id="sflowThresh" min="10" max="90" step="5" value="50"><span class="sfh-val" id="vSflowThresh">50%</span></div>
+  <div class="sflow-hud-row"><span class="sfh-lbl">DIM</span><input type="range" id="sflowDim" min="0" max="100" step="5" value="60"><span class="sfh-val" id="vSflowDim">60%</span></div>
+  <button id="btnSflowReset">RESET</button>
 </div>
 
 <div id="barSflow">
@@ -11598,6 +11635,14 @@ let extInGainVal = (function(){
   return (isFinite(saved) && saved > 0) ? saved : 3;
 })();
 
+// F4 — backup resume() for when nothing is polling FlipAudioReact.read() at the moment
+// iOS re-suspends the AudioContext (e.g. mic-only mode with no visual loop running).
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && extAudioCtx && extAudioCtx.state === 'suspended') {
+    extAudioCtx.resume().catch(()=>{});
+  }
+});
+
 // Draw one CAM sticker shape onto ctx at canvas coords (cx,cy) with pixel radius r
 function _drawCamStickerShape(ctx, type, cx, cy, r, selected) {
   ctx.save();
@@ -12022,6 +12067,8 @@ function switchTab(tab) {
   document.getElementById('barFusion').classList.toggle('visible', isFusion);
   document.getElementById('fusionHUD').classList.toggle('visible', isFusion);
   document.getElementById('barSflow' ).classList.toggle('visible', isSflow);
+  document.getElementById('sflowHUD' ).classList.toggle('visible', isSflow);
+  if (window._sfSyncHudLayout) window._sfSyncHudLayout();
   // Permission overlays live outside their areas — hide them on tab exit
   if (!isSono) document.getElementById('sonoPerm').classList.remove('visible');
   if (!isWmp)  document.getElementById('wmpPerm' ).classList.remove('visible');
@@ -13360,6 +13407,11 @@ const FlipAudioReact = {
   read() {
     if (!this._analyser || !this._freq) {
       return { bass: 0, mid: 0, treble: 0, rms: 0, transient: 0 };
+    }
+    // iOS can re-suspend the AudioContext on tab/app switches even after an initial
+    // gesture-triggered resume() — cheap to check every read(), only acts when needed.
+    if (typeof extAudioCtx !== 'undefined' && extAudioCtx && extAudioCtx.state === 'suspended') {
+      extAudioCtx.resume().catch(()=>{});
     }
     const freq = this._freq, n = freq.length;
     this._analyser.getByteFrequencyData(freq);
@@ -17469,6 +17521,14 @@ async function _buildExtAudioChain(deviceId) {
       } catch(e2) {
         throw new Error('No se pudo abrir el dispositivo: ' + (e2.message || e2.name));
       }
+    } else if (e1.name === 'OverconstrainedError' || e1.name === 'NotReadableError' || e1.name === 'ConstraintNotSatisfiedError') {
+      // Some iOS versions reject echoCancellation:false/noiseSuppression:false/autoGainControl:false —
+      // retry with a plain {audio:true} request before giving up.
+      try {
+        extMicStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      } catch(e1b) {
+        throw new Error('Permiso de audio denegado: ' + (e1b.message || e1b.name));
+      }
     } else {
       throw new Error('Permiso de audio denegado: ' + (e1.message || e1.name));
     }
@@ -17580,18 +17640,117 @@ async function stopExtAudio() {
 // F4 — MIC móvil: analyser vivo compartido por FUSION/GLITCH/SONO/WMP como MODULADOR,
 // pero SIN apagar la cámara ni entrar en extAudioMode (a diferencia de startExtAudio, que en
 // desktop reemplaza la cámara). Debe llamarse dentro del gesto del tap (iOS exige resume() ahí).
+let _micDeathHandler = null; // cleanup ref for the current mic track's 'ended'/'mute' listener
+
+async function _micReacquireCameraIfDead() {
+  // iOS Safari frequently ends/mutes the previous video track when a second
+  // getUserMedia(audio) call lands — give the video element a beat, then check.
+  await new Promise(res => setTimeout(res, 300));
+  if (!extMicOnlyMode) return;
+  const camDead = !!stream && (
+    stream.getVideoTracks().every(t => t.readyState === 'ended' || t.muted) ||
+    vid.videoWidth === 0
+  );
+  if (camDead) {
+    try {
+      await startCamera(facingMode);
+      console.log('[MicOnly] camera re-acquired after iOS killed it.');
+    } catch (err) {
+      console.warn('[MicOnly] camera re-acquire failed:', err);
+    }
+  }
+  // FLOW keeps its own independent camera stream — ask it to check/restart itself too.
+  if (typeof window._sflowRestartCam === 'function') window._sflowRestartCam();
+}
+
+function _micWatchTrackDeath(track) {
+  const onDeath = async () => {
+    if (!extMicOnlyMode) return;
+    track.removeEventListener('ended', onDeath);
+    track.removeEventListener('mute', onDeath);
+    try {
+      await _buildExtAudioChain();
+      _micWatchTrackDeath(extMicStream.getAudioTracks()[0]);
+      console.log('[MicOnly] audio chain rebuilt after track death.');
+    } catch (err) {
+      console.warn('[MicOnly] audio rebuild failed, stopping mic mode:', err);
+      await stopMicOnly();
+      const btn = document.getElementById('btnMicMobile');
+      if (btn) { btn.classList.remove('active'); btn.textContent = '🎙'; }
+      flipToast('⚠ MIC se desconectó');
+    }
+  };
+  _micDeathHandler = onDeath;
+  if (track) {
+    track.addEventListener('ended', onDeath);
+    track.addEventListener('mute', onDeath);
+  }
+}
+
 async function startMicOnly() {
+  // Snapshot whether the camera looked alive BEFORE requesting the mic, so we know
+  // whether it's worth checking/reacquiring afterwards.
+  const camWasActive = !!(stream && stream.getVideoTracks().some(t => t.readyState === 'live'));
+
   await _buildExtAudioChain();
   extMicOnlyMode = true;
   console.log('[MicOnly] started. Stream tracks:', extMicStream.getTracks().map(t => t.label));
+
+  _micWatchTrackDeath(extMicStream.getAudioTracks()[0]);
+
+  if (camWasActive) _micReacquireCameraIfDead();
+  else if (typeof window._sflowRestartCam === 'function') window._sflowRestartCam();
+
+  _startMicLevelFeedback();
 }
 
 async function stopMicOnly() {
+  _stopMicLevelFeedback();
   if (extMicStream) { extMicStream.getTracks().forEach(t => t.stop()); extMicStream = null; }
   if (extAudioCtx)  { await extAudioCtx.close().catch(()=>{}); extAudioCtx = null; }
   extAnalyser = null;
   FlipAudioReact.attach(null);
   extMicOnlyMode = false;
+  _micDeathHandler = null;
+}
+
+// ── F4 — feedback visual de nivel en el botón #btnMicMobile ─────────────────
+// Mientras extMicOnlyMode está activo: lee FlipAudioReact.read().rms cada ~150ms y lo
+// expone como --mic-level (CSS anima el glow). Si a los ~3s sigue en ~0, marca "sin señal".
+let _micLevelTimer = null;
+let _micLevelStartT = 0;
+let _micNoSignalWarned = false;
+
+function _startMicLevelFeedback() {
+  _stopMicLevelFeedback();
+  const btn = document.getElementById('btnMicMobile');
+  if (!btn) return;
+  _micLevelStartT = performance.now();
+  _micNoSignalWarned = false;
+  _micLevelTimer = setInterval(() => {
+    if (!extMicOnlyMode || !extAnalyser) { _stopMicLevelFeedback(); return; }
+    const rms = FlipAudioReact.read().rms || 0;
+    btn.style.setProperty('--mic-level', Math.max(0, Math.min(1, rms * 3)).toFixed(3));
+    const elapsed = performance.now() - _micLevelStartT;
+    if (!_micNoSignalWarned && elapsed > 3000) {
+      if (rms < 0.01) {
+        _micNoSignalWarned = true;
+        btn.textContent = '🎙⚠';
+        flipToast('🎙 sin señal — revisa permisos o sube SENSIBILIDAD');
+      } else {
+        _micNoSignalWarned = true; // señal detectada al menos una vez, no repetir el chequeo
+      }
+    }
+  }, 150);
+}
+
+function _stopMicLevelFeedback() {
+  if (_micLevelTimer) { clearInterval(_micLevelTimer); _micLevelTimer = null; }
+  const btn = document.getElementById('btnMicMobile');
+  if (btn) {
+    btn.style.removeProperty('--mic-level');
+    if (btn.textContent === '🎙⚠') btn.textContent = '🎙';
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -18094,6 +18253,13 @@ document.getElementById('btnAsciiGlitch').addEventListener('click', async () => 
 // Note: camCustomPal / uploadCustomPal / asciiCustomPal are intentionally NOT persisted.
 // Custom FREE colors are session-only; palette index (activePal/uploadActivePal) is saved.
 // ════════════════════════════════════════════════════════════════════
+// ── FLOW (silhouette) playground params ────────────────────────────────
+// Declared globally (not inside the SILHOUETTE FLOW block below, which is a
+// plain `{...}` block that runs *after* loadSettings() executes) so
+// saveSettings/loadSettings can read & restore them; the FLOW block reads
+// this same object live every frame via a local `SFP` alias.
+window._sfParams = { flare: 50, density: 8, fill: 40, thresh: 50, dim: 60 };
+
 function saveSettings() {
   try {
     localStorage.setItem('flipSettings', JSON.stringify({
@@ -18112,6 +18278,7 @@ function saveSettings() {
       acSharpOn, acSharpVal, acEdgeOn, acEdgeVal,
       camFpsTarget, camFpsEnabled, uploadFPS, asciiFont,
       scrAudioReactVal,
+      _sfParams: window._sfParams,
     }));
   } catch(_) {}
 }
@@ -18292,6 +18459,30 @@ function loadSettings() {
       const e = document.getElementById('scrAudioReact');
       if (e) { e.value = scrAudioReactVal; const v = document.getElementById('vScrAudioReact'); if (v) v.textContent = scrAudioReactVal + '%'; }
     }
+    // FLOW playground params (window._sfParams — see declaration near
+    // saveSettings; the FLOW block below reads this object live per frame)
+    if (s._sfParams && typeof s._sfParams === 'object') {
+      const _sfClamp = (v, lo, hi, def) => {
+        v = Math.round(Number(v));
+        return isFinite(v) ? Math.max(lo, Math.min(hi, v)) : def;
+      };
+      window._sfParams.flare   = _sfClamp(s._sfParams.flare,   0,  100, 50);
+      window._sfParams.density = _sfClamp(s._sfParams.density, 6,  14,  8);
+      window._sfParams.fill    = _sfClamp(s._sfParams.fill,    0,  100, 40);
+      window._sfParams.thresh  = _sfClamp(s._sfParams.thresh,  10, 90,  50);
+      window._sfParams.dim     = _sfClamp(s._sfParams.dim,     0,  100, 60);
+      const _sfSyncSliderEl = (id, vid, val, suffix) => {
+        const e = document.getElementById(id);
+        if (e) e.value = val;
+        const v = document.getElementById(vid);
+        if (v) v.textContent = val + suffix;
+      };
+      _sfSyncSliderEl('sflowFlare',   'vSflowFlare',   window._sfParams.flare,   '%');
+      _sfSyncSliderEl('sflowDensity', 'vSflowDensity', window._sfParams.density, 'px');
+      _sfSyncSliderEl('sflowFill',    'vSflowFill',    window._sfParams.fill,    '%');
+      _sfSyncSliderEl('sflowThresh',  'vSflowThresh',  window._sfParams.thresh,  '%');
+      _sfSyncSliderEl('sflowDim',     'vSflowDim',     window._sfParams.dim,     '%');
+    }
   } catch(_) {}
 }
 
@@ -18394,7 +18585,39 @@ if (screen.width > 768) {
     btn.classList.add('pending');
   }
 
-  btn.addEventListener('click', async () => {
+  // ── Sensibilidad accesible en móvil: long-press cicla la ganancia 3x → 5x → 8x → 3x…
+  // (el slider SENSIBILIDAD solo vive en el panel desktop). Long-press elegido sobre
+  // doble-tap porque no compite con el gesto de zoom de Safari y es más fácil de detectar
+  // sin falsos positivos contra el tap normal de encender/apagar el mic.
+  const GAIN_CYCLE = [3, 5, 8];
+  let _micLPTimer = null;
+  let _micLPFired = false;
+
+  function _cycleMicGain() {
+    const idx = GAIN_CYCLE.indexOf(extInGainVal);
+    extInGainVal = GAIN_CYCLE[(idx + 1) % GAIN_CYCLE.length] ?? GAIN_CYCLE[0];
+    if (extInGainNode) extInGainNode.gain.value = extInGainVal;
+    try { localStorage.setItem('flip_ext_gain', String(extInGainVal)); } catch(_) {}
+    // Keep the desktop slider/label in sync in case the panel is later opened.
+    const slider = document.getElementById('extGainSlider');
+    const label  = document.getElementById('extGainVal');
+    if (slider) slider.value = extInGainVal;
+    if (label) label.textContent = extInGainVal.toFixed(1) + 'x';
+    if (navigator.vibrate) { try { navigator.vibrate(15); } catch(_) {} }
+    flipToast('🎙 sensibilidad ' + extInGainVal + 'x');
+  }
+
+  btn.addEventListener('pointerdown', () => {
+    _micLPFired = false;
+    clearTimeout(_micLPTimer);
+    _micLPTimer = setTimeout(() => { _micLPFired = true; _cycleMicGain(); }, 550);
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => {
+    btn.addEventListener(ev, () => clearTimeout(_micLPTimer));
+  });
+
+  btn.addEventListener('click', async (e) => {
+    if (_micLPFired) { _micLPFired = false; e.preventDefault(); return; } // consumed by long-press
     if (extMicOnlyMode) {
       await stopMicOnly();
       _setBtnState(false);
@@ -18447,8 +18670,14 @@ if (screen.width > 768) {
     orange : '#ff6d00',
   };
   const SF_CHARS       = '01アイウエオカキクケコ★◆●○';
-  const SF_FONT_SIZE   = 8;
-  const SF_FONT        = `bold ${SF_FONT_SIZE}px monospace`;
+
+  // ── Playground params (FLARE/DENSITY/FILL/THRESH/DIM) ────────────────
+  // Live reference to the globally-declared window._sfParams (see near
+  // saveSettings) so sliders below can read/write it directly and the
+  // render loops pick up changes on the very next frame — no re-kick needed.
+  const SFP = window._sfParams;
+  function _sfFontSize() { return SFP.density; }          // DENSITY = grid font size (px)
+  function _sfFont()     { return `bold ${_sfFontSize()}px monospace`; }
 
   // rgb(...)/#hex → rgba(...) string helper for the glow gradient
   function _sfRGBA(color, a) {
@@ -18463,6 +18692,8 @@ if (screen.width > 768) {
   // Cheap additive "bloom": snapshot the canvas to an offscreen buffer, then
   // blit it back slightly oversized in 'lighter' mode for a soft halo.
   function _sfApplyBloom(CW, CH) {
+    // FLARE=0 → skip the whole bloom pass (perf: no offscreen snapshot/blit)
+    if (SFP.flare <= 0) return;
     if (!_sfBloomCanvas) {
       _sfBloomCanvas = document.createElement('canvas');
       _sfBloomCtx    = _sfBloomCanvas.getContext('2d');
@@ -18474,7 +18705,7 @@ if (screen.width > 768) {
     _sfBloomCtx.clearRect(0, 0, CW, CH);
     _sfBloomCtx.drawImage(sfCanvas, 0, 0);
     sfCtx.save();
-    sfCtx.globalAlpha = 0.35;
+    sfCtx.globalAlpha = 0.35 * (SFP.flare / 50);
     sfCtx.globalCompositeOperation = 'lighter';
     sfCtx.drawImage(_sfBloomCanvas, -1.5, -1.5, CW + 3, CH + 3);
     sfCtx.restore();
@@ -18517,13 +18748,15 @@ if (screen.width > 768) {
 
   // ── Pretext grid (cached per canvas size) ───────────────────────────
   async function _sfBuildGrid(cw, ch) {
-    if (_sfPretextCache && _sfPretextCache.cw === cw && _sfPretextCache.ch === ch) {
+    const fontSize = _sfFontSize();
+    if (_sfPretextCache && _sfPretextCache.cw === cw && _sfPretextCache.ch === ch
+        && _sfPretextCache.fontSize === fontSize) {
       return _sfPretextCache;
     }
     let chars = [];
     try {
       const PT = await loadPretext();
-      const prepared = PT.prepare(SF_CHARS.repeat(8), SF_FONT);
+      const prepared = PT.prepare(SF_CHARS.repeat(8), _sfFont());
       const lines    = PT.layout(prepared, cw);
       // lines is array of glyph objects with {x,y,char}
       if (Array.isArray(lines)) {
@@ -18536,36 +18769,39 @@ if (screen.width > 768) {
     // Fallback: plain grid
     if (chars.length < 10) {
       chars = [];
-      for (let y = SF_FONT_SIZE; y < ch; y += SF_FONT_SIZE) {
-        for (let x = 0; x < cw; x += SF_FONT_SIZE) {
+      for (let y = fontSize; y < ch; y += fontSize) {
+        for (let x = 0; x < cw; x += fontSize) {
           chars.push({ ch: SF_CHARS[Math.floor(Math.random() * SF_CHARS.length)], x, y });
         }
       }
     }
 
-    _sfPretextCache = { chars, cw, ch };
+    _sfPretextCache = { chars, cw, ch, fontSize };
     return _sfPretextCache;
   }
 
   // ── Chamfer distance + Sobel normal/tangent ──────────────────────────
-  function _sfBuildVectors(mask, W, H, maxDist) {
+  function _sfBuildVectors(mask, W, H, maxDist, threshold) {
+    // threshold: 0-1 confidence cutoff for inside/outside (default 0.5).
+    // Lower = more generous/inflated silhouette, higher = stricter.
+    if (typeof threshold !== 'number' || !isFinite(threshold)) threshold = 0.5;
     // dist[i] = distance to nearest boundary pixel
     const dist  = new Float32Array(W * H);
     const LARGE = 9999;
     dist.fill(LARGE);
 
-    // Mark boundary: inside (mask >= 0.5) pixels adjacent to outside
+    // Mark boundary: inside (mask >= threshold) pixels adjacent to outside
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const i   = y * W + x;
-        const val = mask[i] >= 0.5 ? 1 : 0;
+        const val = mask[i] >= threshold ? 1 : 0;
         if (val === 0) { dist[i] = 0; continue; }
         // check 4-neighbours
         let onEdge = false;
-        if (x > 0     && mask[i - 1]   < 0.5) onEdge = true;
-        if (x < W - 1 && mask[i + 1]   < 0.5) onEdge = true;
-        if (y > 0     && mask[i - W]   < 0.5) onEdge = true;
-        if (y < H - 1 && mask[i + W]   < 0.5) onEdge = true;
+        if (x > 0     && mask[i - 1]   < threshold) onEdge = true;
+        if (x < W - 1 && mask[i + 1]   < threshold) onEdge = true;
+        if (y > 0     && mask[i - W]   < threshold) onEdge = true;
+        if (y < H - 1 && mask[i + W]   < threshold) onEdge = true;
         if (onEdge) dist[i] = 0;
       }
     }
@@ -18575,7 +18811,7 @@ if (screen.width > 768) {
     for (let y = 1; y < H; y++) {
       for (let x = 1; x < W - 1; x++) {
         const i = y * W + x;
-        if (mask[i] < 0.5) continue;
+        if (mask[i] < threshold) continue;
         const d1 = dist[(y-1)*W + (x-1)] + 1.414;
         const d2 = dist[(y-1)*W +  x   ] + 1.0;
         const d3 = dist[(y-1)*W + (x+1)] + 1.414;
@@ -18587,7 +18823,7 @@ if (screen.width > 768) {
     for (let y = H - 2; y >= 0; y--) {
       for (let x = W - 2; x >= 0; x--) {
         const i = y * W + x;
-        if (mask[i] < 0.5) continue;
+        if (mask[i] < threshold) continue;
         const d1 = dist[(y+1)*W + (x+1)] + 1.414;
         const d2 = dist[(y+1)*W +  x   ] + 1.0;
         const d3 = dist[(y+1)*W + (x-1)] + 1.414;
@@ -18602,7 +18838,7 @@ if (screen.width > 768) {
     for (let y = 1; y < H - 1; y++) {
       for (let x = 1; x < W - 1; x++) {
         const i = y * W + x;
-        if (mask[i] < 0.5 || dist[i] > maxDist) continue;
+        if (mask[i] < threshold || dist[i] > maxDist) continue;
         const gx =
           -dist[(y-1)*W+(x-1)] + dist[(y-1)*W+(x+1)]
           -2*dist[y*W+(x-1)]   + 2*dist[y*W+(x+1)]
@@ -18638,9 +18874,13 @@ if (screen.width > 768) {
   }
 
   // ── Procedural audio-driven mask ─────────────────────────────────────
-  // Returns a Float32Array(maskW*maskH) of confidences (0/1) in the same
-  // format _sfBuildVectors expects (>= 0.5 == inside), so the existing
-  // distance-field / normal / aura-glyph pipeline can consume it unchanged.
+  // Returns a Float32Array(maskW*maskH) of confidences, strictly 0 or 1 (no
+  // in-between), in the same format _sfBuildVectors expects (>= threshold ==
+  // inside), so the existing distance-field / normal / aura-glyph pipeline
+  // can consume it unchanged. NOTE: because this mask is binary, THRESH
+  // (10-90%) never changes the audio-mode blob's size — any cutoff strictly
+  // between 0 and 1 draws the same line. THRESH's visible effect is cam mode
+  // only, where MediaPipe's mask is a continuous confidence field.
   function _sfAudioMask(maskW, maskH, t) {
     const mask = new Float32Array(maskW * maskH);
     if (!extAnalyser) return mask;
@@ -18700,7 +18940,7 @@ if (screen.width > 768) {
     const auraDepth = SF_AURA_DEPTH[_sfAuraKey] || SF_AURA_DEPTH.m;
 
     const maskArr = _sfAudioMask(maskW, maskH, t);
-    const { dist, nx, ny } = _sfBuildVectors(maskArr, maskW, maskH, auraDepth);
+    const { dist, nx, ny } = _sfBuildVectors(maskArr, maskW, maskH, auraDepth, SFP.thresh / 100);
 
     // ── Colour ──────────────────────────────────────────────────────
     let inkHex;
@@ -18730,14 +18970,18 @@ if (screen.width > 768) {
     } catch (_) { sfCtx.restore(); return; }
 
     // ── Render aura characters ───────────────────────────────────────
-    sfCtx.font      = SF_FONT;
+    sfCtx.font      = _sfFont();
     sfCtx.textAlign = 'center';
     sfCtx.textBaseline = 'middle';
 
     // Flare: shadow glow set once for the whole glyph pass (cheap — not
-    // re-set per glyph), intensity breathing with rms.
+    // re-set per glyph), intensity breathing with rms. FLARE=0 → no shadow
+    // at all (skip shadowBlur entirely for perf).
     sfCtx.shadowColor = inkHex;
-    sfCtx.shadowBlur  = 6 + 10 * _sfRms;
+    sfCtx.shadowBlur  = SFP.flare > 0 ? (6 + 10 * _sfRms) * (SFP.flare / 50) : 0;
+
+    const _sfThresh   = SFP.thresh / 100;
+    const _sfFillMul  = SFP.fill / 40;
 
     for (const g of grid.chars) {
       // Map canvas coord → mask coord (1:1 proportional, no video scale)
@@ -18766,13 +19010,16 @@ if (screen.width > 768) {
         sfCtx.rotate(angle);
         sfCtx.fillText(g.ch, 0, 0);
         sfCtx.restore();
-      } else if (maskArr[mi] >= 0.5) {
+      } else if (maskArr[mi] >= _sfThresh) {
         // Deep interior: tenue static fill glyphs (no push, no rotation)
-        sfCtx.save();
-        sfCtx.globalAlpha = 0.15 + 0.07 * _sfRms;
-        sfCtx.fillStyle   = inkHex;
-        sfCtx.fillText(g.ch, g.x, g.y);
-        sfCtx.restore();
+        const fillAlpha = (0.15 + 0.07 * _sfRms) * _sfFillMul;
+        if (fillAlpha > 0.001) {
+          sfCtx.save();
+          sfCtx.globalAlpha = fillAlpha;
+          sfCtx.fillStyle   = inkHex;
+          sfCtx.fillText(g.ch, g.x, g.y);
+          sfCtx.restore();
+        }
       }
     }
 
@@ -18818,7 +19065,7 @@ if (screen.width > 768) {
     const auraDepth = SF_AURA_DEPTH[_sfAuraKey] || SF_AURA_DEPTH.m;
 
     // Build vectors from mask
-    const { dist, nx, ny } = _sfBuildVectors(maskArr, maskW, maskH, auraDepth);
+    const { dist, nx, ny } = _sfBuildVectors(maskArr, maskW, maskH, auraDepth, SFP.thresh / 100);
 
     // ── Colour ──────────────────────────────────────────────────────
     let inkHex;
@@ -18849,7 +19096,7 @@ if (screen.width > 768) {
     } else {
       dw = CW; dh = CW / vAspect; dx = 0; dy = (CH - dh) / 2;
     }
-    sfCtx.globalAlpha = 0.6;
+    sfCtx.globalAlpha = SFP.dim / 100;
     sfCtx.drawImage(sfVid, dx, dy, dw, dh);
     sfCtx.globalAlpha = 1;
     sfCtx.restore();
@@ -18861,15 +19108,19 @@ if (screen.width > 768) {
     } catch (_) { sfCtx.restore(); return; }
 
     // ── Render aura characters ───────────────────────────────────────
-    sfCtx.font      = SF_FONT;
+    sfCtx.font      = _sfFont();
     sfCtx.textAlign = 'center';
     sfCtx.textBaseline = 'middle';
 
     // Flare: shadow glow set once for the whole glyph pass (cheap — not
     // re-set per glyph), intensity breathing with rms when audio is live.
+    // FLARE=0 → no shadow at all (skip shadowBlur entirely for perf).
     const _sfRms = FlipAudioReact.read().rms;
     sfCtx.shadowColor = inkHex;
-    sfCtx.shadowBlur  = 6 + 10 * _sfRms;
+    sfCtx.shadowBlur  = SFP.flare > 0 ? (6 + 10 * _sfRms) * (SFP.flare / 50) : 0;
+
+    const _sfThresh   = SFP.thresh / 100;
+    const _sfFillMul  = SFP.fill / 40;
 
     for (const g of grid.chars) {
       // Map canvas coord → mask coord
@@ -18899,13 +19150,16 @@ if (screen.width > 768) {
         sfCtx.rotate(angle);
         sfCtx.fillText(g.ch, 0, 0);
         sfCtx.restore();
-      } else if (maskArr[mi] >= 0.5) {
+      } else if (maskArr[mi] >= _sfThresh) {
         // Deep interior: tenue static fill glyphs (no push, no rotation)
-        sfCtx.save();
-        sfCtx.globalAlpha = 0.15 + 0.07 * _sfRms;
-        sfCtx.fillStyle   = inkHex;
-        sfCtx.fillText(g.ch, g.x, g.y);
-        sfCtx.restore();
+        const fillAlpha = (0.15 + 0.07 * _sfRms) * _sfFillMul;
+        if (fillAlpha > 0.001) {
+          sfCtx.save();
+          sfCtx.globalAlpha = fillAlpha;
+          sfCtx.fillStyle   = inkHex;
+          sfCtx.fillText(g.ch, g.x, g.y);
+          sfCtx.restore();
+        }
       }
     }
 
@@ -18980,6 +19234,12 @@ if (screen.width > 768) {
     _sfRafId = requestAnimationFrame(_sfLoop);
   }
 
+  // Exposed so startMicOnly() can re-acquire FLOW's own camera stream when iOS
+  // kills it after a second getUserMedia(audio) call (see F4 mic móvil).
+  window._sflowRestartCam = function() {
+    if (_sfActive && _sfMode === 'cam') { _sfStart(_sfFacing); }
+  };
+
   // ── Stop (exposed globally so switchTab can call it) ────────────────
   window._sflowStop = function _sflowStop() {
     _sfActive = false;
@@ -19032,6 +19292,71 @@ if (screen.width > 768) {
         b.classList.toggle('active', b === btn));
     });
   });
+
+  // ── Playground sliders: FLARE / DENSITY / FILL / THRESH / DIM ────────
+  // Reads/writes SFP (== window._sfParams) live — the render loops above
+  // pick up new values on the very next frame, no re-kick required.
+  const SF_DEFAULTS = { flare: 50, density: 8, fill: 40, thresh: 50, dim: 60 };
+  let _sfSaveTimer = 0;
+  function _sfSyncSliderUI(id, vid, val, suffix) {
+    const e = document.getElementById(id);
+    if (e) e.value = val;
+    const v = document.getElementById(vid);
+    if (v) v.textContent = val + suffix;
+  }
+  function _sfQueueSave() {
+    clearTimeout(_sfSaveTimer);
+    _sfSaveTimer = setTimeout(saveSettings, 300);
+  }
+  document.getElementById('sflowFlare').addEventListener('input', e => {
+    SFP.flare = +e.target.value;
+    document.getElementById('vSflowFlare').textContent = SFP.flare + '%';
+    _sfQueueSave();
+  });
+  document.getElementById('sflowDensity').addEventListener('input', e => {
+    SFP.density = +e.target.value;
+    document.getElementById('vSflowDensity').textContent = SFP.density + 'px';
+    _sfPretextCache = null; // invalidate grid — font size changed
+    _sfQueueSave();
+  });
+  document.getElementById('sflowFill').addEventListener('input', e => {
+    SFP.fill = +e.target.value;
+    document.getElementById('vSflowFill').textContent = SFP.fill + '%';
+    _sfQueueSave();
+  });
+  document.getElementById('sflowThresh').addEventListener('input', e => {
+    SFP.thresh = +e.target.value;
+    document.getElementById('vSflowThresh').textContent = SFP.thresh + '%';
+    _sfQueueSave();
+  });
+  document.getElementById('sflowDim').addEventListener('input', e => {
+    SFP.dim = +e.target.value;
+    document.getElementById('vSflowDim').textContent = SFP.dim + '%';
+    _sfQueueSave();
+  });
+  document.getElementById('btnSflowReset').addEventListener('click', () => {
+    Object.assign(SFP, SF_DEFAULTS);
+    _sfSyncSliderUI('sflowFlare',   'vSflowFlare',   SFP.flare,   '%');
+    _sfSyncSliderUI('sflowDensity', 'vSflowDensity', SFP.density, 'px');
+    _sfSyncSliderUI('sflowFill',    'vSflowFill',    SFP.fill,    '%');
+    _sfSyncSliderUI('sflowThresh',  'vSflowThresh',  SFP.thresh,  '%');
+    _sfSyncSliderUI('sflowDim',     'vSflowDim',     SFP.dim,     '%');
+    _sfPretextCache = null;
+    saveSettings();
+    flipToast('FLOW reset');
+  });
+
+  // ── HUD layout sync: keeps #sflowArea's bottom clear of #sflowHUD ────
+  // Exposed globally so switchTab() (defined earlier in the file, outside
+  // this block) can call it right after toggling #sflowHUD's visibility.
+  window._sfSyncHudLayout = function() {
+    const hud = document.getElementById('sflowHUD');
+    const h = (hud && hud.classList.contains('visible')) ? (hud.offsetHeight || 0) : 0;
+    document.documentElement.style.setProperty('--sflow-hud-h', h + 'px');
+  };
+  // Also re-sync whenever the HUD's own height changes (row wrap on resize,
+  // orientation change touch-target media query, etc).
+  new ResizeObserver(() => window._sfSyncHudLayout()).observe(document.getElementById('sflowHUD'));
 
   // ── Photo snap ──────────────────────────────────────────────────────
   document.getElementById('btnSflowSnap').addEventListener('click', async () => {
@@ -19100,6 +19425,7 @@ if (screen.width > 768) {
     _sfResizeTimer = setTimeout(() => {
       _sfResize();
       _sfPretextCache = null;
+      window._sfSyncHudLayout();
     }, 200);
   }).observe(document.getElementById('sflowArea'));
 }
