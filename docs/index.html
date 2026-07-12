@@ -3200,6 +3200,7 @@
     </div>
     <div class="editor-pane-note" id="scrashPaneNote">Start with palette and hue, then add movement, then season with grain and crush.</div>
     <div id="scrashControlsGrid">
+      <div class="sc-row" style="grid-column:1 / -1;"><span class="sc-lbl">AUDIO REACT</span><span class="sc-val" id="vScrAudioReact">100%</span><input type="range" id="scrAudioReact" min="0" max="300" step="10" value="100"></div>
       <div class="sc-row scrash-pane active" data-scrash-pane="color"><span class="sc-lbl">CHROMA</span><span class="sc-val" id="vScrChroma">0</span><input type="range" id="scrChroma" min="0" max="50" value="0"></div>
       <div class="sc-row scrash-pane" data-scrash-pane="motion"><span class="sc-lbl">DRIP</span><span class="sc-val" id="vScrDrip">0</span><input type="range" id="scrDrip" min="0" max="100" value="0"></div>
       <div class="sc-row scrash-pane" data-scrash-pane="color"><span class="sc-lbl">NEON</span><span class="sc-val" id="vScrNeon">0</span><input type="range" id="scrNeon" min="0" max="100" value="0"></div>
@@ -13107,6 +13108,54 @@ class FlipAudioEngine {
 const flipAudioEngine = new FlipAudioEngine();
 window.addEventListener('beforeunload', () => { flipAudioEngine.destroy().catch(() => {}); });
 
+// FlipAudioReact — shared audio-reactivity reader used by modules that want exaggerated,
+// per-feature-smoothed band energies (bass/mid/treble/rms) plus a transient spike detector.
+// Autonomous: no dependency on any single tab/module. attach(null) fully resets state.
+const FlipAudioReact = {
+  _analyser: null, _freq: null,
+  _sm: { bass: 0, mid: 0, treble: 0, rms: 0 },
+  _rmsAvg: 0,
+  attach(analyser) {
+    this._analyser = analyser || null;
+    this._freq = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
+    this._sm.bass = 0; this._sm.mid = 0; this._sm.treble = 0; this._sm.rms = 0;
+    this._rmsAvg = 0;
+  },
+  read() {
+    if (!this._analyser || !this._freq) {
+      return { bass: 0, mid: 0, treble: 0, rms: 0, transient: 0 };
+    }
+    const freq = this._freq, n = freq.length;
+    this._analyser.getByteFrequencyData(freq);
+
+    const bassEnd = Math.max(1, Math.floor(n * 0.08));
+    const midEnd  = Math.max(bassEnd + 1, Math.floor(n * 0.35));
+    let bassSum = 0, midSum = 0, trebSum = 0, sqSum = 0;
+    for (let i = 0; i < bassEnd; i++) bassSum += freq[i];
+    for (let i = bassEnd; i < midEnd; i++) midSum += freq[i];
+    for (let i = midEnd; i < n; i++) trebSum += freq[i];
+    for (let i = 0; i < n; i++) { const v = freq[i] / 255; sqSum += v * v; }
+
+    const bassRaw = Math.min(1, bassSum / (bassEnd * 255));
+    const midRaw  = Math.min(1, midSum  / ((midEnd - bassEnd) * 255));
+    const trebRaw = Math.min(1, trebSum / ((n - midEnd) * 255));
+    const rmsRaw  = Math.min(1, Math.sqrt(sqSum / n));
+
+    // Per-feature attack/release smoothing: fast rise, slow fall.
+    const _env = (cur, target) => cur + (target - cur) * (target > cur ? 0.6 : 0.12);
+    this._sm.bass   = _env(this._sm.bass,   bassRaw);
+    this._sm.mid    = _env(this._sm.mid,    midRaw);
+    this._sm.treble = _env(this._sm.treble, trebRaw);
+    this._sm.rms    = _env(this._sm.rms,    rmsRaw);
+
+    // Transient: how far the raw (unsmoothed) rms spikes above its slow rolling average.
+    this._rmsAvg = this._rmsAvg * 0.95 + rmsRaw * 0.05;
+    const transient = Math.max(0, Math.min(1, (rmsRaw - this._rmsAvg) * 6));
+
+    return { bass: this._sm.bass, mid: this._sm.mid, treble: this._sm.treble, rms: this._sm.rms, transient };
+  }
+};
+
 function createCombinedStream(canvasStream, audioEngine) {
   if (!audioEngine || !audioEngine.isInitialized || !audioEngine.recordingDest) return canvasStream;
   const audioStream = audioEngine.recordingDest.stream;
@@ -17199,6 +17248,7 @@ async function startExtAudio(deviceId) {
   extInGainNode.gain.value = extInGainVal;
   src.connect(extInGainNode);
   extInGainNode.connect(extAnalyser);
+  FlipAudioReact.attach(extAnalyser);
 
   extAudioMode = true;
   document.body.classList.add('ext-audio');
@@ -17248,6 +17298,7 @@ async function stopExtAudio() {
   if (extMicStream) { extMicStream.getTracks().forEach(t => t.stop()); extMicStream = null; }
   if (extAudioCtx)  { await extAudioCtx.close().catch(()=>{}); extAudioCtx = null; }
   extAnalyser = null;
+  FlipAudioReact.attach(null);
   extAudioMode = false;
   // Stop visual loops that were running only because of ext audio
   cameraRunning = false;
@@ -17279,6 +17330,10 @@ async function stopExtAudio() {
 // ════════════════════════════════════════════════════════════════════
 let scrChromaVal = 0, scrDripVal = 0, scrNeonVal = 0, scrWaveVal = 0, scrCrushVal = 0;
 let scrHueVal = 0, scrGrainVal = 0, scrChaosVal = 0;
+// EXT AUDIO: master intensity (0-300%) for the audio-reactive bindings in _applyScrash, plus the
+// transient "burst" envelope (0..1, decays ~200ms) that spikes DRIP/CHAOS on hits.
+let scrAudioReactVal = 100;
+let _scrBurst = 0;
 let scrPyPal = 'none'; // 'none' | 'py' | 'spy' | 'ide'
 const SCR_PY_PALETTES = {
   py:  [[55,118,171],[255,212,59]],
@@ -17385,6 +17440,19 @@ let _ctxScrAudioBuf;
   _scrSlider('scrGrain',  'vScrGrain',  v => { scrGrainVal = v; });
   _scrSlider('scrChaos',  'vScrChaos',  v => { scrChaosVal = v; });
   _scrSlider('scrSpeed',  'vScrSpeed',  v => { scrSpeedVal = v; });
+
+  // AUDIO REACT — master intensity (0-300%) for GLITCH's audio bindings. Shows a "%" suffix
+  // (unlike the other sc-row spans) and persists across reloads via saveSettings/loadSettings.
+  const scrAudioReactEl  = document.getElementById('scrAudioReact');
+  const vScrAudioReactEl = document.getElementById('vScrAudioReact');
+  if (scrAudioReactEl) {
+    scrAudioReactEl.addEventListener('input', () => {
+      scrAudioReactVal = +scrAudioReactEl.value;
+      if (vScrAudioReactEl) vScrAudioReactEl.textContent = scrAudioReactVal + '%';
+      saveSettings();
+      if (uploadMode === 'scrash' && lastUploadSrc) renderUploadPreview();
+    });
+  }
 
   function _syncScrashCaptureVisual(recording = false) {
     const snapBtn = document.getElementById('btnScrashSnap');
@@ -17501,12 +17569,25 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod) {
   const out = new Uint8ClampedArray(w * h * 4);
 
   // EXT AUDIO: additive modulation of a few params on top of the slider base values —
-  // sliders are never overwritten, only nudged so the music is visibly felt.
+  // sliders are never overwritten, only nudged so the music is visibly felt. AUDIO REACT
+  // (scrAudioReactVal, 0-300%) is the master intensity I on top of that. A is null when
+  // there's no audioMod (no ext audio) so every audio term below is exactly 0 — no regression.
   let chromaEff = scrChromaVal, waveEff = scrWaveVal, grainEff = scrGrainVal;
+  let dripEff = scrDripVal, chaosEff = scrChaosVal, hueSpeedExtra = 0;
+  let A = null;
   if (audioMod) {
-    chromaEff = Math.min(50,  scrChromaVal + audioMod.trebE * 25);
-    waveEff   = Math.min(30,  scrWaveVal   + audioMod.bassE * 22);
-    grainEff  = Math.min(100, scrGrainVal  + audioMod.rms   * 70);
+    A = FlipAudioReact.read();
+    const I = scrAudioReactVal / 100;
+    // K's: bass→wave 22, (mid+transient)→chroma 28, treble→hue-spin 90 deg/s, treble→grain 45.
+    waveEff   = Math.min(40,  scrWaveVal   + A.bass * 22 * I);               // cap raised 30→40 for audio-driven boost only
+    chromaEff = Math.min(50,  scrChromaVal + (A.mid + A.transient) * 28 * I);
+    grainEff  = Math.min(100, scrGrainVal  + A.treble * 45 * I);
+    hueSpeedExtra = A.treble * 90 * I;
+    // Transient burst envelope: retrigger to full on a hit, exponential decay (~200ms @30fps).
+    if (A.transient > 0.45) _scrBurst = 1;
+    dripEff  = Math.min(100, scrDripVal  + _scrBurst * 35 * I);
+    chaosEff = Math.min(100, scrChaosVal + _scrBurst * 30 * I);
+    _scrBurst *= 0.82;
   }
 
   const animT    = t * scrSpeedVal * 0.02;
@@ -17514,10 +17595,22 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod) {
   const waveAmp  = scrAnimateOn ? (Math.sin(animT * 0.8)  * 0.5 + 0.5) * waveEff   : waveEff;
   const crushT   = (scrCrushVal / 100) * 255;
   const neonT    = scrNeonVal / 100;
-  const dripT    = scrDripVal / 100;
+  const dripT    = dripEff / 100;
+  // Multi-layer waves: on a strong bass hit (A.bass > 0.6), stack up to 2 extra desynced
+  // waves on top of the primary one (hard cap 3 layers total) — "more waves", not just bigger.
+  const extraWaves = !!(A && A.bass > 0.6);
+  const hueEff = scrHueVal + hueSpeedExtra * t;
 
   for (let y = 0; y < h; y++) {
-    const waveX = waveAmp > 0 ? Math.round(Math.sin(y * 0.06 + animT) * waveAmp) : 0;
+    let waveX = 0;
+    if (waveAmp > 0) {
+      let wv = Math.sin(y * 0.06 + animT) * waveAmp;
+      if (extraWaves) {
+        wv += Math.sin(y * 0.06 * 1.7 + animT * 1.7 + 1.3) * waveAmp * 0.6;
+        wv += Math.sin(y * 0.06 * 2.3 + animT * 2.3 + 2.6) * waveAmp * 0.35;
+      }
+      waveX = Math.round(wv);
+    }
     let srcY = y;
     if (dripT > 0 && Math.random() < dripT * 0.15) {
       srcY = Math.max(0, y + Math.floor(Math.random() * dripT * 30));
@@ -17558,9 +17651,9 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod) {
         }
       }
 
-      // HUE rotation
-      if (scrHueVal !== 0) {
-        const hrad = scrHueVal * Math.PI / 180, hcos = Math.cos(hrad), hsin = Math.sin(hrad);
+      // HUE rotation (base slider angle + audio-driven extra spin accumulated over time via t)
+      if (hueEff !== 0) {
+        const hrad = hueEff * Math.PI / 180, hcos = Math.cos(hrad), hsin = Math.sin(hrad);
         const hr = r*(0.213+hcos*0.787-hsin*0.213)+g*(0.213-hcos*0.213+hsin*0.143)+b*(0.213-hcos*0.213-hsin*0.787);
         const hg = r*(0.715-hcos*0.715-hsin*0.715)+g*(0.715+hcos*0.285+hsin*0.140)+b*(0.715-hcos*0.715+hsin*0.715);
         const hb = r*(0.072-hcos*0.072+hsin*0.928)+g*(0.072-hcos*0.072-hsin*0.283)+b*(0.072+hcos*0.928+hsin*0.072);
@@ -17576,7 +17669,7 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod) {
       // PALETTE quantization (Pythonization palettes)
       if (scrPyPal !== 'none') { [r,g,b] = _scrQuantize(r,g,b); }
       // CHAOS: random pixel disruption (when no palette: random color flash)
-      else if (scrChaosVal > 0 && Math.random() < scrChaosVal * 0.003) {
+      else if (chaosEff > 0 && Math.random() < chaosEff * 0.003) {
         r=Math.random()*255|0; g=Math.random()*255|0; b=Math.random()*255|0;
       }
 
@@ -17585,6 +17678,34 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod) {
     }
   }
   dstCtx.putImageData(new ImageData(out, w, h), 0, 0);
+}
+
+// Reads band energies (bass/mid/treble/rms, each 0..1) off a given AnalyserNode. Shared by
+// _renderScrashAudioSource (audio-only source painting) and the camera branch of _scrashLoop
+// (so a live camera feed can ALSO be modulated by _applyScrash's audioMod when ext audio runs
+// alongside the camera).
+function _scrashComputeBands(freqData, timeData) {
+  const freqN = freqData.length;
+  const bassEnd = Math.max(1, Math.floor(freqN * 0.08));
+  const midEnd  = Math.max(bassEnd + 1, Math.floor(freqN * 0.35));
+  let bassE = 0, midE = 0, trebE = 0;
+  for (let i = 0;       i < bassEnd; i++) bassE += freqData[i];
+  for (let i = bassEnd; i < midEnd;  i++) midE  += freqData[i];
+  for (let i = midEnd;  i < freqN;   i++) trebE += freqData[i];
+  bassE = Math.min(1, (bassE / (bassEnd * 255)) * 3);
+  midE  = Math.min(1, (midE  / ((midEnd - bassEnd) * 255)) * 3);
+  trebE = Math.min(1, (trebE / ((freqN - midEnd) * 255)) * 3);
+  let rms = 0;
+  for (let i = 0; i < timeData.length; i++) { const v = (timeData[i] - 128) / 128; rms += v * v; }
+  rms = Math.min(1, Math.sqrt(rms / timeData.length) * 3);
+  return { bassE, midE, trebE, rms };
+}
+function _scrashReadAudioBands(an) {
+  const freqData = new Uint8Array(an.frequencyBinCount);
+  const timeData = new Uint8Array(an.fftSize);
+  an.getByteFrequencyData(freqData);
+  an.getByteTimeDomainData(timeData);
+  return _scrashComputeBands(freqData, timeData);
 }
 
 // EXT AUDIO: paints an audio-reactive source image into _ctxScrTmp when there's no camera frame.
@@ -17599,18 +17720,7 @@ function _renderScrashAudioSource(w, h, t) {
   an.getByteFrequencyData(freqData);
   an.getByteTimeDomainData(timeData);
 
-  const bassEnd = Math.max(1, Math.floor(freqN * 0.08));
-  const midEnd  = Math.max(bassEnd + 1, Math.floor(freqN * 0.35));
-  let bassE = 0, midE = 0, trebE = 0;
-  for (let i = 0;       i < bassEnd; i++) bassE += freqData[i];
-  for (let i = bassEnd; i < midEnd;  i++) midE  += freqData[i];
-  for (let i = midEnd;  i < freqN;   i++) trebE += freqData[i];
-  bassE = Math.min(1, (bassE / (bassEnd * 255)) * 3);
-  midE  = Math.min(1, (midE  / ((midEnd - bassEnd) * 255)) * 3);
-  trebE = Math.min(1, (trebE / ((freqN - midEnd) * 255)) * 3);
-  let rms = 0;
-  for (let i = 0; i < timeData.length; i++) { const v = (timeData[i] - 128) / 128; rms += v * v; }
-  rms = Math.min(1, Math.sqrt(rms / timeData.length) * 3);
+  const { bassE, midE, trebE, rms } = _scrashComputeBands(freqData, timeData);
 
   if (_scrAudioBuf.width !== w || _scrAudioBuf.height !== h) {
     _scrAudioBuf.width = w; _scrAudioBuf.height = h;
@@ -17674,7 +17784,9 @@ function _scrashLoop(t) {
     else          { dw = SH * vA; dx = (SW - dw) / 2; }
     _ctxScrTmp.fillStyle='#000'; _ctxScrTmp.fillRect(0,0,SW,SH);
     _ctxScrTmp.drawImage(vid, dx, dy, dw, dh);
-    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed);
+    // Camera + ext audio simultaneously: also feed audioMod so the live feed reacts to the music.
+    const camAudioMod = (extAudioMode && extAnalyser) ? _scrashReadAudioBands(extAnalyser) : undefined;
+    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed, camAudioMod);
   } else if (extAudioMode && extAnalyser) {
     const audioMod = _renderScrashAudioSource(SW, SH, elapsed);
     _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed, audioMod);
@@ -17729,6 +17841,7 @@ function saveSettings() {
       acSepiaVal, acInvertVal, acThreshOn, acThreshVal,
       acSharpOn, acSharpVal, acEdgeOn, acEdgeVal,
       camFpsTarget, camFpsEnabled, uploadFPS, asciiFont,
+      scrAudioReactVal,
     }));
   } catch(_) {}
 }
@@ -17903,6 +18016,12 @@ function loadSettings() {
     // Camera
     if (s.camFpsTarget !== undefined) { camFpsTarget=s.camFpsTarget; const e=document.getElementById('camFpsSlider'); if(e){e.value=camFpsTarget;document.getElementById('camFpsVal').textContent=camFpsTarget;} }
     if (s.camFpsEnabled !== undefined) { camFpsEnabled=s.camFpsEnabled; const e=document.getElementById('camFpsToggle'); if(e)e.checked=camFpsEnabled; }
+    // GLITCH — AUDIO REACT master intensity
+    if (typeof s.scrAudioReactVal === 'number' && isFinite(s.scrAudioReactVal)) {
+      scrAudioReactVal = Math.max(0, Math.min(300, s.scrAudioReactVal));
+      const e = document.getElementById('scrAudioReact');
+      if (e) { e.value = scrAudioReactVal; const v = document.getElementById('vScrAudioReact'); if (v) v.textContent = scrAudioReactVal + '%'; }
+    }
   } catch(_) {}
 }
 
