@@ -1988,12 +1988,36 @@
       padding:6px 4px; cursor:pointer; transition:.1s;
     }
     .edit-add-btn:disabled { opacity:.3; cursor:not-allowed; }
-    .edit-hint { color:var(--mid); font-family:monospace; font-size:9px; letter-spacing:.5px; cursor:pointer; }
-    .edit-glitch-mini { display:flex; flex-direction:column; gap:4px; border-top:1px solid var(--dark); padding-top:6px; }
-    .edit-mini-row { display:flex; align-items:center; gap:6px; }
+    .edit-layer-cfg {
+      min-width:40px; min-height:40px; background:none; border:1px solid var(--dark); color:var(--mid);
+      font-family:monospace; font-size:11px; cursor:pointer; flex-shrink:0;
+    }
+    .edit-layer-cfg.active { color:var(--paper); border-color:var(--paper); }
+    .edit-mini-row { display:flex; align-items:center; gap:6px; min-height:40px; }
     .edit-mini-row .emr-lbl { color:var(--paper); font-family:monospace; font-size:9px; letter-spacing:1px; min-width:52px; flex-shrink:0; }
-    .edit-mini-row .emr-val { color:var(--paper); font-family:monospace; font-size:9px; min-width:24px; text-align:right; flex-shrink:0; }
+    .edit-mini-row .emr-val { color:var(--paper); font-family:monospace; font-size:9px; min-width:30px; text-align:right; flex-shrink:0; }
     .edit-mini-row input[type="range"] { flex:1; height:3px; accent-color:var(--paper); cursor:pointer; }
+    .edit-audio-sens { display:flex; align-items:center; gap:6px; padding:4px 0; border-top:1px solid var(--dark); }
+    .edit-audio-sens input[type="range"] { flex:1; accent-color:var(--paper); cursor:pointer; }
+    /* ── CAM family-per-layer strip ─────────────────────────────────── */
+    .edit-fam-panel {
+      display:flex; flex-wrap:wrap; gap:4px; padding:6px; margin:-4px 0 4px;
+      border:1px solid var(--dark); border-top:none; background:rgba(255,255,255,.02);
+    }
+    .edit-fam-pill {
+      flex:1 1 30%; min-height:40px; min-width:64px; background:none; border:1px solid var(--dark); color:var(--mid);
+      font-family:monospace; font-size:9px; font-weight:bold; letter-spacing:.5px; cursor:pointer; transition:.1s;
+    }
+    .edit-fam-pill.active { background:var(--paper); color:var(--ink); border-color:var(--paper); }
+    /* ── GLITCH per-layer expandable panel ──────────────────────────── */
+    .edit-glitch-panel {
+      display:grid; grid-template-columns:1fr 1fr; gap:4px 10px; padding:6px;
+      margin:-4px 0 4px; border:1px solid var(--dark); border-top:none; background:rgba(255,255,255,.02);
+    }
+    .edit-glitch-panel .edit-mini-row.full { grid-column:1 / -1; }
+    @media (max-width:767px) {
+      .edit-glitch-panel { grid-template-columns:1fr; }
+    }
     #barEdit {
       display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
       background:var(--ink); border-top:2px solid var(--dark);
@@ -2003,7 +2027,7 @@
     #btnEditRec.recording .btn-icon { background:#bb0000; border-color:#ff4444; animation:pulse 1s ease-in-out infinite; }
     #btnEditRec.recording .btn-label { color:#ff6666; }
     @media (max-width:767px) {
-      .edit-src-pill, .edit-layer-bypass, .edit-layer-btn, .edit-add-btn { min-height:40px; }
+      .edit-src-pill, .edit-layer-bypass, .edit-layer-btn, .edit-add-btn, .edit-layer-cfg, .edit-fam-pill { min-height:40px; }
       .edit-mini-row input[type="range"] { height:40px; }
     }
 
@@ -3652,7 +3676,7 @@
 <div id="sflowHUD">
   <div class="sflow-hud-row"><span class="sfh-lbl">FLARE</span><input type="range" id="sflowFlare" min="0" max="100" step="5" value="50"><span class="sfh-val" id="vSflowFlare">50%</span></div>
   <div class="sflow-hud-row"><span class="sfh-lbl">DENSITY</span><input type="range" id="sflowDensity" min="6" max="14" step="1" value="8"><span class="sfh-val" id="vSflowDensity">8px</span></div>
-  <div class="sflow-hud-row"><span class="sfh-lbl">FILL</span><input type="range" id="sflowFill" min="0" max="100" step="5" value="40"><span class="sfh-val" id="vSflowFill">40%</span></div>
+  <div class="sflow-hud-row"><span class="sfh-lbl">FILL</span><input type="range" id="sflowFill" min="0" max="100" step="5" value="35"><span class="sfh-val" id="vSflowFill">35%</span></div>
   <div class="sflow-hud-row"><span class="sfh-lbl">THRESH</span><input type="range" id="sflowThresh" min="10" max="90" step="5" value="50"><span class="sfh-val" id="vSflowThresh">50%</span></div>
   <div class="sflow-hud-row"><span class="sfh-lbl">DIM</span><input type="range" id="sflowDim" min="0" max="100" step="5" value="60"><span class="sfh-val" id="vSflowDim">60%</span></div>
   <button id="btnSflowReset">RESET</button>
@@ -3710,16 +3734,15 @@
     <button class="edit-src-pill"        id="editSrcVideo" data-edit-src="video">🎞 VIDEO</button>
     <button class="edit-src-pill"        id="editSrcAudio" data-edit-src="audio">🎵 AUDIO</button>
   </div>
+  <div class="edit-audio-sens" id="editAudioSens" style="display:none;">
+    <span class="emr-lbl">SENSIBILIDAD</span>
+    <input type="range" id="editAudioGain" min="0.5" max="10" step="0.5" value="3">
+    <span class="emr-val" id="vEditAudioGain">3.0x</span>
+  </div>
   <div id="editLayersList"></div>
   <div class="edit-add-row">
     <button class="edit-add-btn" id="btnEditAddCam">+ CAPA CAM</button>
     <button class="edit-add-btn" id="btnEditAddGlitch">+ CAPA GLITCH</button>
-  </div>
-  <div class="edit-hint" id="editCamHint">familia CAM activa: —</div>
-  <div class="edit-glitch-mini">
-    <div class="edit-mini-row"><span class="emr-lbl">WAVE</span><input type="range" id="editWave" min="0" max="30" value="0"><span class="emr-val" id="vEditWave">0</span></div>
-    <div class="edit-mini-row"><span class="emr-lbl">CHROMA</span><input type="range" id="editChroma" min="0" max="50" value="0"><span class="emr-val" id="vEditChroma">0</span></div>
-    <div class="edit-mini-row"><span class="emr-lbl">CHAOS</span><input type="range" id="editChaos" min="0" max="100" value="0"><span class="emr-val" id="vEditChaos">0</span></div>
   </div>
 </div>
 
@@ -12039,15 +12062,17 @@ const FLIP_STEP_ENGINES = {
   cam: {
     label: 'CAM',
     renderStep(srcCanvas, targetCtx, params, audio, t) {
-      // params.family: only the currently ACTIVE camFamily is supported this phase.
-      // _applyCamState mutates a lot of derived globals/body classes per family switch,
-      // so swapping family per pipeline frame is out of scope for this keystone —
-      // documented here rather than reached for silently.
-      if (params && params.family && params.family !== camFamily && !FLIP_STEP_ENGINES.cam._familyWarned) {
-        FLIP_STEP_ENGINES.cam._familyWarned = true;
-        console.warn('[pipeline] cam step: per-frame family override not supported yet, using active camFamily (' + camFamily + ')');
-      }
-      _renderCamEngineFrame(srcCanvas, srcCanvas.width, srcCanvas.height, targetCtx, false, { path: 'preview', now: t });
+      // params.family: per-frame family override. _createCamEngineFrame already
+      // resolves its profile from `options.family || camFamily` without touching
+      // camFamily/camVariant globals or body classes (that's _applyCamState's job,
+      // which we deliberately do NOT call here) — so this is isolated from the
+      // CAM tab's active family. Caveat: the renderer's *variant* nuance (DSI
+      // LGCY dither, VFD DAY/NIGHT/FLASH, CASKIA SEIKO ghost trail, ...) still
+      // reads the global camVariant/legacyMode directly, so an overridden family
+      // renders with whatever variant is currently active elsewhere rather than
+      // its own default variant. Family-level isolation only, by design.
+      const family = (params && params.family && CAM_FAMILIES[params.family]) ? params.family : undefined;
+      _renderCamEngineFrame(srcCanvas, srcCanvas.width, srcCanvas.height, targetCtx, false, { path: 'preview', now: t, family });
     },
   },
   glitch: {
@@ -18264,10 +18289,11 @@ function _scrashReadAudioBands(an) {
   return _scrashComputeBands(freqData, timeData);
 }
 
-// EXT AUDIO: paints an audio-reactive source image into _ctxScrTmp when there's no camera frame.
-// Uses a persistent scrolling buffer (bass-driven speed) with a right-edge frequency-bar column
-// and a treble/mid waveform overlay, so it carries motion history instead of a static frame.
-// Returns band energies so _applyScrash can additively modulate a few params.
+// EXT AUDIO / MIC: paints an audio-reactive source image into _ctxScrTmp when there's no camera
+// frame. Field of stacked horizontal wave bands fills the WHOLE frame (not just the edges), a
+// full-width time-domain waveform overlay, radial fade+zoom persistence (trails flow inward
+// instead of scrolling off one side), and a transient flash. Returns band energies so
+// _applyScrash can additively modulate a few params.
 function _renderScrashAudioSource(w, h, t) {
   const an = extAnalyser;
   const freqN = an.frequencyBinCount;
@@ -18277,48 +18303,79 @@ function _renderScrashAudioSource(w, h, t) {
   an.getByteTimeDomainData(timeData);
 
   const { bassE, midE, trebE, rms } = _scrashComputeBands(freqData, timeData);
+  const react = (typeof FlipAudioReact !== 'undefined') ? FlipAudioReact.read() : null;
+  const transient = react ? react.transient : 0;
 
   if (_scrAudioBuf.width !== w || _scrAudioBuf.height !== h) {
     _scrAudioBuf.width = w; _scrAudioBuf.height = h;
   }
 
-  // Fade previous frame (trail) then scroll left — bass drives scroll speed
+  // 1) Persistence: fade to black, then zoom the previous buffer slightly toward center so
+  //    trails flow inward and fill the middle instead of scrolling off one side.
   _ctxScrAudioBuf.globalCompositeOperation = 'source-over';
-  _ctxScrAudioBuf.fillStyle = 'rgba(5,3,10,0.15)';
+  const zw = w * 0.99, zh = h * 0.99; // draw buffer onto itself at 99% scale, centered → inward drift
+  _ctxScrAudioBuf.drawImage(_scrAudioBuf, (w - zw) / 2, (h - zh) / 2, zw, zh);
+  _ctxScrAudioBuf.fillStyle = 'rgba(5,3,10,0.12)';
   _ctxScrAudioBuf.fillRect(0, 0, w, h);
-  const shift = Math.max(1, Math.round(1 + bassE * 5));
-  _ctxScrAudioBuf.drawImage(_scrAudioBuf, -shift, 0, w, h);
 
-  // New frequency-bar column at the right edge (grave→forma grande/lenta, agudo→detalle fino)
-  const colW  = Math.max(6, Math.round(w * 0.035));
-  const bars  = 28;
-  const bandStep = Math.max(1, Math.floor(freqN / bars));
-  const barW = colW / bars * 6; // slightly overlapping wide bars for a saturated block feel
-  for (let bIdx = 0; bIdx < bars; bIdx++) {
-    let e = 0;
-    for (let k = 0; k < bandStep; k++) e += freqData[bIdx * bandStep + k] || 0;
-    e = e / (bandStep * 255);
-    const barH = Math.max(2, e * h);
-    const hue  = (bIdx / bars) * 300 + t * 24 + bassE * 60;
-    const sat  = 85 + trebE * 15;
-    const light = 32 + e * 48;
-    _ctxScrAudioBuf.fillStyle = `hsl(${hue % 360},${sat}%,${light}%)`;
-    const bx = w - colW + (bIdx / bars) * colW;
-    const by = h - barH;
-    _ctxScrAudioBuf.fillRect(bx, by, barW, barH);
+  // 2) Field of stacked horizontal wave bands spanning the FULL width — bass in the central
+  //    bands (wide, slow, tall amplitude), mids at mid frequency, treble as fine ripple.
+  const bandCount = 6;
+  const bandGap = h / (bandCount + 1);
+  for (let bi = 0; bi < bandCount; bi++) {
+    const cy = bandGap * (bi + 1);
+    // distance from the vertical center (0 at middle band(s), 1 at outer bands)
+    const distFromCenter = Math.abs((bi + 0.5) / bandCount - 0.5) * 2;
+    const bassWeight = 1 - distFromCenter;      // graves dominan bandas centrales
+    const trebWeight = distFromCenter;          // agudos dominan bandas externas
+    const ampBase = h * 0.045 * (0.5 + bassE * bassWeight * 1.6 + midE * 0.4 + trebE * trebWeight * 0.3);
+    const hue = (bi / bandCount) * 300 + t * 14 + bassE * 40;
+    const sat = 70 + rms * 30;
+    const light = 45 + (bassE * bassWeight + trebE * trebWeight) * 20;
+    const alpha = 0.55 + rms * 0.35;
+    _ctxScrAudioBuf.strokeStyle = `hsla(${hue % 360},${sat}%,${light}%,${alpha})`;
+    _ctxScrAudioBuf.lineWidth = Math.max(2, 2 + bassE * bassWeight * 6 + rms * 3);
+    _ctxScrAudioBuf.beginPath();
+    const freqSlow  = 0.6 + midE * 1.2;
+    const freqMed   = 2 + midE * 3;
+    const freqFast  = 6 + trebE * 14;
+    const phase     = t * (0.6 + bassE * 1.2) + bi * 0.9;
+    const cols = 64;
+    for (let c = 0; c <= cols; c++) {
+      const nx = c / cols;
+      const x = nx * w;
+      const y = cy
+        + Math.sin(nx * Math.PI * 2 * freqSlow + phase) * ampBase
+        + Math.sin(nx * Math.PI * 2 * freqMed + phase * 1.7) * ampBase * 0.35 * (0.3 + midE)
+        + Math.sin(nx * Math.PI * 2 * freqFast + phase * 2.3) * ampBase * 0.18 * (0.2 + trebE);
+      if (c === 0) _ctxScrAudioBuf.moveTo(x, y); else _ctxScrAudioBuf.lineTo(x, y);
+    }
+    _ctxScrAudioBuf.stroke();
   }
 
-  // Waveform overlay for fine detail texture
-  _ctxScrAudioBuf.strokeStyle = `hsla(${(t * 40) % 360},90%,${70 - trebE * 20}%,0.85)`;
-  _ctxScrAudioBuf.lineWidth = Math.max(1, 1 + rms * 4);
+  // 3) Time-domain waveform overlay, stretched across the full width, centered vertically.
+  _ctxScrAudioBuf.strokeStyle = `hsla(${(t * 40) % 360},90%,${72 - trebE * 20}%,0.9)`;
+  _ctxScrAudioBuf.lineWidth = Math.max(2, 2 + rms * 3);
   _ctxScrAudioBuf.beginPath();
-  const step = Math.max(1, Math.ceil(timeData.length / colW));
-  for (let i = 0, n = 0; i < timeData.length; i += step, n++) {
-    const x = w - colW + (n / (colW / step)) * colW;
-    const y = h / 2 + ((timeData[i] - 128) / 128) * (h / 2) * (0.4 + midE * 0.6);
+  const step = Math.max(1, Math.ceil(timeData.length / w));
+  let n = 0;
+  for (let i = 0; i < timeData.length; i += step, n++) {
+    const x = (n / Math.ceil(timeData.length / step)) * w;
+    const y = h / 2 + ((timeData[i] - 128) / 128) * (h / 2) * (0.5 + midE * 0.5);
     if (n === 0) _ctxScrAudioBuf.moveTo(x, y); else _ctxScrAudioBuf.lineTo(x, y);
   }
   _ctxScrAudioBuf.stroke();
+
+  // 4) Transient flash — a brief radial glow so hits/beats read visually across the frame.
+  if (transient > 0.5) {
+    const flashHue = (bassE > trebE ? 20 : 200) + midE * 60;
+    const flashAlpha = Math.min(0.25, (transient - 0.5) * 0.5);
+    const grad = _ctxScrAudioBuf.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.65);
+    grad.addColorStop(0, `hsla(${flashHue},90%,65%,${flashAlpha})`);
+    grad.addColorStop(1, 'hsla(0,0%,0%,0)');
+    _ctxScrAudioBuf.fillStyle = grad;
+    _ctxScrAudioBuf.fillRect(0, 0, w, h);
+  }
 
   _ctxScrTmp.clearRect(0, 0, w, h);
   _ctxScrTmp.drawImage(_scrAudioBuf, 0, 0);
@@ -18344,7 +18401,7 @@ function _scrashLoop(t) {
     // F4: incluye extMicOnlyMode — mic móvil modula GLITCH sin apagar la cámara.
     const camAudioMod = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? _scrashReadAudioBands(extAnalyser) : undefined;
     _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed, camAudioMod);
-  } else if (extAudioMode && extAnalyser) {
+  } else if ((extAudioMode || extMicOnlyMode) && extAnalyser) {
     const audioMod = _renderScrashAudioSource(SW, SH, elapsed);
     _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed, audioMod);
   }
@@ -18386,7 +18443,7 @@ document.getElementById('btnAsciiGlitch').addEventListener('click', async () => 
 // plain `{...}` block that runs *after* loadSettings() executes) so
 // saveSettings/loadSettings can read & restore them; the FLOW block reads
 // this same object live every frame via a local `SFP` alias.
-window._sfParams = { flare: 50, density: 8, fill: 40, thresh: 50, dim: 60 };
+window._sfParams = { flare: 50, density: 8, fill: 35, thresh: 50, dim: 60 };
 
 // ── EDIT (layered pipeline) state ───────────────────────────────────────
 // Declared globally (not inside the EDIT block further down, which runs
@@ -18606,7 +18663,7 @@ function loadSettings() {
       };
       window._sfParams.flare   = _sfClamp(s._sfParams.flare,   0,  100, 50);
       window._sfParams.density = _sfClamp(s._sfParams.density, 6,  14,  8);
-      window._sfParams.fill    = _sfClamp(s._sfParams.fill,    0,  100, 40);
+      window._sfParams.fill    = _sfClamp(s._sfParams.fill,    0,  100, 35);
       window._sfParams.thresh  = _sfClamp(s._sfParams.thresh,  10, 90,  50);
       window._sfParams.dim     = _sfClamp(s._sfParams.dim,     0,  100, 60);
       const _sfSyncSliderEl = (id, vid, val, suffix) => {
@@ -18633,7 +18690,10 @@ function loadSettings() {
       steps = steps
         .filter(st => st && (st.engine === 'cam' || st.engine === 'glitch'))
         .slice(0, 3)
-        .map(st => ({ engine: st.engine, on: st.on !== false }));
+        .map(st => ({
+          engine: st.engine, on: st.on !== false,
+          ...(st.engine === 'cam' ? { family: (st.family && CAM_FAMILIES[st.family]) ? st.family : undefined } : {}),
+        }));
       if (!steps.length) steps = [{ engine: 'glitch', on: true }];
       window._editPipeline = { source: { type: srcType }, steps };
     }
@@ -18832,6 +18892,16 @@ if (screen.width > 768) {
   const SFP = window._sfParams;
   function _sfFontSize() { return SFP.density; }          // DENSITY = grid font size (px)
   function _sfFont()     { return `bold ${_sfFontSize()}px monospace`; }
+
+  // FILL progressive interior population: deterministic per-glyph hash so
+  // the SAME subset of grid glyphs is "on" every frame at a given fill%
+  // (no per-frame Math.random() — that would flicker). 0% → nothing lights
+  // up (contour-only), 100% → every eligible interior glyph lights up.
+  function _sfFillInclude(gi, fillPct) {
+    if (fillPct <= 0) return false;
+    if (fillPct >= 100) return true;
+    return ((gi * 2654435761) >>> 0) % 100 < fillPct;
+  }
 
   // rgb(...)/#hex → rgba(...) string helper for the glow gradient
   function _sfRGBA(color, a) {
@@ -19137,7 +19207,8 @@ if (screen.width > 768) {
     const _sfThresh   = SFP.thresh / 100;
     const _sfFillMul  = SFP.fill / 40;
 
-    for (const g of grid.chars) {
+    for (let gi = 0; gi < grid.chars.length; gi++) {
+      const g = grid.chars[gi];
       // Map canvas coord → mask coord (1:1 proportional, no video scale)
       const mx = Math.round((g.x / CW) * maskW) | 0;
       const my = Math.round((g.y / CH) * maskH) | 0;
@@ -19164,9 +19235,12 @@ if (screen.width > 768) {
         sfCtx.rotate(angle);
         sfCtx.fillText(g.ch, 0, 0);
         sfCtx.restore();
-      } else if (maskArr[mi] >= _sfThresh) {
-        // Deep interior: tenue static fill glyphs (no push, no rotation)
-        const fillAlpha = (0.15 + 0.07 * _sfRms) * _sfFillMul;
+      } else if (maskArr[mi] >= _sfThresh && _sfFillInclude(gi, SFP.fill)) {
+        // Deep interior: tenue static fill glyphs (no push, no rotation).
+        // Stable per-glyph hash decides participation (see _sfFillInclude)
+        // so FILL sweeps contour→sparse→full without flicker; alpha
+        // clamped so 100% doesn't blow out to solid.
+        const fillAlpha = Math.min(0.35, (0.15 + 0.07 * _sfRms) * _sfFillMul);
         if (fillAlpha > 0.001) {
           sfCtx.save();
           sfCtx.globalAlpha = fillAlpha;
@@ -19235,12 +19309,18 @@ if (screen.width > 768) {
     sfCtx.fillStyle = '#000';
     sfCtx.fillRect(0, 0, CW, CH);
 
-    // Draw video (mirrored if front cam)
-    sfCtx.save();
+    // Single mirror transform for the WHOLE frame (video + aura/glyphs),
+    // mirrored only for the front camera ('user' — natural selfie feel).
+    // Rear camera ('environment') draws un-mirrored. This transform stays
+    // open through the glyph pass below so the mask-derived aura/fill
+    // (sampled from the raw, un-mirrored MediaPipe mask) lands on the same
+    // screen pixels as the video it outlines — mirroring only the video and
+    // leaving glyph coords un-mirrored would desync the aura from the body.
     if (_sfFacing === 'user') {
       sfCtx.translate(CW, 0);
       sfCtx.scale(-1, 1);
     }
+
     // Fit video into canvas (cover)
     const vAspect = VW / VH;
     const cAspect = CW / CH;
@@ -19253,7 +19333,6 @@ if (screen.width > 768) {
     sfCtx.globalAlpha = SFP.dim / 100;
     sfCtx.drawImage(sfVid, dx, dy, dw, dh);
     sfCtx.globalAlpha = 1;
-    sfCtx.restore();
 
     // ── Build/use Pretext grid ───────────────────────────────────────
     let grid;
@@ -19276,7 +19355,8 @@ if (screen.width > 768) {
     const _sfThresh   = SFP.thresh / 100;
     const _sfFillMul  = SFP.fill / 40;
 
-    for (const g of grid.chars) {
+    for (let gi = 0; gi < grid.chars.length; gi++) {
+      const g = grid.chars[gi];
       // Map canvas coord → mask coord
       const mx = Math.round((g.x / CW) * maskW * scaleX) | 0;
       const my = Math.round((g.y / CH) * maskH * scaleY) | 0;
@@ -19304,9 +19384,12 @@ if (screen.width > 768) {
         sfCtx.rotate(angle);
         sfCtx.fillText(g.ch, 0, 0);
         sfCtx.restore();
-      } else if (maskArr[mi] >= _sfThresh) {
-        // Deep interior: tenue static fill glyphs (no push, no rotation)
-        const fillAlpha = (0.15 + 0.07 * _sfRms) * _sfFillMul;
+      } else if (maskArr[mi] >= _sfThresh && _sfFillInclude(gi, SFP.fill)) {
+        // Deep interior: tenue static fill glyphs (no push, no rotation).
+        // Which glyphs participate is decided by a stable per-glyph hash
+        // (see _sfFillInclude) so FILL sweeps contour→sparse→full without
+        // flicker; alpha is clamped so 100% doesn't blow out to solid.
+        const fillAlpha = Math.min(0.35, (0.15 + 0.07 * _sfRms) * _sfFillMul);
         if (fillAlpha > 0.001) {
           sfCtx.save();
           sfCtx.globalAlpha = fillAlpha;
@@ -19751,12 +19834,17 @@ function _fusionLoop(ts) {
 //
 // GLITCH params in EDIT: rather than reopening #scrashControls (gated by
 // body.scrash-hud-open + activeTab==='scrash', not trivial to surface from
-// another tab cleanly), EDIT ships 3 mini-sliders (WAVE/CHROMA/CHAOS) that
-// write straight into the same globals _applyScrash reads (scrWaveVal,
-// scrChromaVal, scrChaosVal) and mirror the GLITCH tab's own sliders/spans
-// (#scrWave/#vScrWave etc) both ways where present. CAM family isn't
-// re-picked here — a clickable hint text shows the active family and jumps
-// to the CAM tab, per the phase-1 scope noted on FLIP_STEP_ENGINES.cam.
+// another tab cleanly), each GLITCH layer row has a ⚙ button that expands
+// a full 9-slider panel (CHROMA/DRIP/NEON/WAVE/CRUSH/HUE/GRAIN/CHAOS/AUDIO
+// REACT + ANIMATE/SPEED) writing straight into the same globals _applyScrash
+// reads, and mirrors the GLITCH tab's own sliders/spans both ways where
+// present. v1: all GLITCH layers share these globals (no per-layer state
+// yet — that lands with STAGE). CAM family IS re-pickable per layer: each
+// CAM row has a FAM button that expands the family strip and writes
+// step.family, which FLIP_STEP_ENGINES.cam.renderStep passes through as
+// options.family to _renderCamEngineFrame — isolated from the CAM tab's
+// active camFamily/camVariant globals (see that function for why this is
+// safe: profile resolution never calls _applyCamState or touches globals).
 // ════════════════════════════════════════════════════════════════════
 let editRunning = false;
 let editSource = { type: 'cam' };
@@ -19764,6 +19852,11 @@ let editSteps = [{ engine: 'glitch', on: true }];
 let _editSrcCanvas = null;
 let _editPhotoImg = null;   // HTMLImageElement | ImageBitmap, source type:'photo'
 let _editLastFrameMs = 0;
+let _editExpandedPanel = null; // { i, kind: 'fam'|'glitch' } | null — only one panel open at a time
+const EDIT_CAM_FAMILIES = [
+  ['DSI', 'DSI'], ['AUTO03', 'AUTO 03'], ['DLPHN', 'DLPHN'], ['CASKIA', 'CASKIA'],
+  ['VFD', 'VFD'], ['OSCAM', 'OSCAM'], ['SLHT', 'SLHT'],
+];
 
 const editCanvas = document.getElementById('editCanvas');
 const ctxEdit = editCanvas.getContext('2d');
@@ -19816,7 +19909,7 @@ function _editLoop(ts) {
   if (ts - _editLastFrameMs >= minInterval) {
     const srcCanvas = _editGetSrcCanvas();
     if (srcCanvas) {
-      const steps = editSteps.filter(s => s.on).map(s => ({ engine: s.engine, params: {} }));
+      const steps = editSteps.filter(s => s.on).map(s => ({ engine: s.engine, params: s.engine === 'cam' ? { family: s.family } : {} }));
       const audio = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? FlipAudioReact.read() : null;
       runPipeline(steps, srcCanvas, ctxEdit, audio, ts);
     }
@@ -19833,7 +19926,10 @@ function _editLoop(ts) {
   let _editRestoredNoFile = false;
   const persisted = window._editPipeline;
   if (persisted) {
-    editSteps = persisted.steps.map(s => ({ engine: s.engine, on: s.on !== false }));
+    editSteps = persisted.steps.map(s => ({
+      engine: s.engine, on: s.on !== false,
+      ...(s.engine === 'cam' ? { family: (s.family && CAM_FAMILIES[s.family]) ? s.family : camFamily } : {}),
+    }));
     if (persisted.source.type === 'photo' || persisted.source.type === 'video') {
       editSource = { type: 'cam' };
       _editRestoredNoFile = true;
@@ -19846,7 +19942,7 @@ function _editLoop(ts) {
   function _editSyncPersistedState() {
     window._editPipeline = {
       source: { type: editSource.type },
-      steps: editSteps.map(s => ({ engine: s.engine, on: s.on })),
+      steps: editSteps.map(s => ({ engine: s.engine, on: s.on, ...(s.engine === 'cam' ? { family: s.family } : {}) })),
     };
   }
   function _editSyncPersisted() {
@@ -19856,9 +19952,41 @@ function _editLoop(ts) {
 
   // ── Layer list UI ────────────────────────────────────────────────────
   function _editLayerLabel(step) {
-    if (step.engine === 'cam') return 'CAM · ' + camFamily;
+    if (step.engine === 'cam') return 'CAM · ' + (step.family || camFamily);
     if (step.engine === 'glitch') return 'GLITCH';
     return step.engine;
+  }
+  function _editFamPanelHtml(i, step) {
+    const active = step.family || camFamily;
+    return `<div class="edit-fam-panel" data-i="${i}">` +
+      EDIT_CAM_FAMILIES.map(([id, label]) =>
+        `<button class="edit-fam-pill${id === active ? ' active' : ''}" data-i="${i}" data-act="setfam" data-fam="${id}">${label}</button>`
+      ).join('') +
+      `</div>`;
+  }
+  function _editGlitchPanelHtml(i) {
+    const row = (lbl, id, min, max, step, val) =>
+      `<div class="edit-mini-row"><span class="emr-lbl">${lbl}</span>` +
+      `<input type="range" data-glitch-param="${id}" min="${min}" max="${max}" step="${step}" value="${val}">` +
+      `<span class="emr-val" data-glitch-val="${id}">${val}</span></div>`;
+    return `<div class="edit-glitch-panel" data-i="${i}">` +
+      row('CHROMA', 'chroma', 0, 50, 1, scrChromaVal) +
+      row('DRIP', 'drip', 0, 100, 1, scrDripVal) +
+      row('NEON', 'neon', 0, 100, 1, scrNeonVal) +
+      row('WAVE', 'wave', 0, 30, 1, scrWaveVal) +
+      row('CRUSH', 'crush', 0, 100, 1, scrCrushVal) +
+      row('HUE', 'hue', 0, 360, 1, scrHueVal) +
+      row('GRAIN', 'grain', 0, 100, 1, scrGrainVal) +
+      row('CHAOS', 'chaos', 0, 100, 1, scrChaosVal) +
+      `<div class="edit-mini-row full"><span class="emr-lbl">AUDIO REACT</span>` +
+      `<input type="range" data-glitch-param="audioreact" min="0" max="300" step="10" value="${scrAudioReactVal}">` +
+      `<span class="emr-val" data-glitch-val="audioreact">${scrAudioReactVal}%</span></div>` +
+      `<div class="edit-mini-row full">` +
+      `<button class="edit-layer-cfg${scrAnimateOn ? ' active' : ''}" data-i="${i}" data-act="glitchanimate">ANIMATE</button>` +
+      `<span class="emr-lbl">SPEED</span>` +
+      `<input type="range" data-glitch-param="speed" min="1" max="20" step="1" value="${scrSpeedVal}">` +
+      `<span class="emr-val" data-glitch-val="speed">${scrSpeedVal}</span></div>` +
+      `</div>`;
   }
   function _editRenderLayers() {
     const list = document.getElementById('editLayersList');
@@ -19866,38 +19994,90 @@ function _editLoop(ts) {
     editSteps.forEach((step, i) => {
       const row = document.createElement('div');
       row.className = 'edit-layer-row' + (step.on ? '' : ' bypassed');
+      const famOpen = _editExpandedPanel && _editExpandedPanel.kind === 'fam' && _editExpandedPanel.i === i;
+      const glitchOpen = _editExpandedPanel && _editExpandedPanel.kind === 'glitch' && _editExpandedPanel.i === i;
       row.innerHTML = `
         <button class="edit-layer-bypass${step.on ? ' on' : ''}" data-i="${i}" data-act="bypass" title="bypass">◉</button>
         <span class="edit-layer-name">${_editLayerLabel(step)}</span>
+        ${step.engine === 'cam' ? `<button class="edit-layer-cfg${famOpen ? ' active' : ''}" data-i="${i}" data-act="famtoggle" title="familia">FAM</button>` : ''}
+        ${step.engine === 'glitch' ? `<button class="edit-layer-cfg${glitchOpen ? ' active' : ''}" data-i="${i}" data-act="glitchtoggle" title="parámetros">⚙</button>` : ''}
         <button class="edit-layer-btn" data-i="${i}" data-act="up" ${i === 0 ? 'disabled' : ''}>▲</button>
         <button class="edit-layer-btn" data-i="${i}" data-act="down" ${i === editSteps.length - 1 ? 'disabled' : ''}>▼</button>
         <button class="edit-layer-btn remove" data-i="${i}" data-act="remove">✕</button>
       `;
       list.appendChild(row);
+      if (famOpen) list.insertAdjacentHTML('beforeend', _editFamPanelHtml(i, step));
+      if (glitchOpen) list.insertAdjacentHTML('beforeend', _editGlitchPanelHtml(i));
     });
     const full = editSteps.length >= 3;
     document.getElementById('btnEditAddCam').disabled = full;
     document.getElementById('btnEditAddGlitch').disabled = full;
-    const hint = document.getElementById('editCamHint');
-    if (hint) hint.textContent = 'familia CAM activa: ' + camFamily + ' (toca para ir a CAM)';
     if (window._editSyncHudLayout) window._editSyncHudLayout();
   }
+
+  const _EDIT_GLITCH_SETTERS = {
+    chroma:     v => { scrChromaVal = v; },
+    drip:       v => { scrDripVal = v; },
+    neon:       v => { scrNeonVal = v; },
+    wave:       v => { scrWaveVal = v; },
+    crush:      v => { scrCrushVal = v; },
+    hue:        v => { scrHueVal = v; },
+    grain:      v => { scrGrainVal = v; },
+    chaos:      v => { scrChaosVal = v; },
+    audioreact: v => { scrAudioReactVal = v; },
+    speed:      v => { scrSpeedVal = v; },
+  };
+  const _EDIT_GLITCH_MIRROR = {
+    chroma: ['scrChroma', 'vScrChroma'], drip: ['scrDrip', 'vScrDrip'], neon: ['scrNeon', 'vScrNeon'],
+    wave: ['scrWave', 'vScrWave'], crush: ['scrCrush', 'vScrCrush'], hue: ['scrHue', 'vScrHue'],
+    grain: ['scrGrain', 'vScrGrain'], chaos: ['scrChaos', 'vScrChaos'],
+    audioreact: ['scrAudioReact', 'vScrAudioReact'], speed: ['scrSpeed', 'vScrSpeed'],
+  };
+  document.getElementById('editLayersList').addEventListener('input', e => {
+    const el = e.target.closest('input[data-glitch-param]');
+    if (!el) return;
+    const param = el.dataset.glitchParam;
+    const v = +el.value;
+    (_EDIT_GLITCH_SETTERS[param] || (() => {}))(v);
+    const valEl = document.querySelector(`[data-glitch-val="${param}"]`);
+    if (valEl) valEl.textContent = param === 'audioreact' ? v + '%' : v;
+    const mirror = _EDIT_GLITCH_MIRROR[param];
+    if (mirror) {
+      const mEl = document.getElementById(mirror[0]), mVEl = document.getElementById(mirror[1]);
+      if (mEl) mEl.value = v;
+      if (mVEl) mVEl.textContent = param === 'audioreact' ? v + '%' : v;
+    }
+    saveSettings();
+    if (uploadMode === 'scrash' && lastUploadSrc) renderUploadPreview();
+  });
 
   document.getElementById('editLayersList').addEventListener('click', e => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     const i = +btn.dataset.i, act = btn.dataset.act;
     if (act === 'bypass') { editSteps[i].on = !editSteps[i].on; }
-    else if (act === 'up' && i > 0) { const t = editSteps[i - 1]; editSteps[i - 1] = editSteps[i]; editSteps[i] = t; }
-    else if (act === 'down' && i < editSteps.length - 1) { const t = editSteps[i + 1]; editSteps[i + 1] = editSteps[i]; editSteps[i] = t; }
-    else if (act === 'remove') { editSteps.splice(i, 1); if (!editSteps.length) editSteps.push({ engine: 'glitch', on: true }); }
+    else if (act === 'up' && i > 0) { const t = editSteps[i - 1]; editSteps[i - 1] = editSteps[i]; editSteps[i] = t; if (_editExpandedPanel) _editExpandedPanel = null; }
+    else if (act === 'down' && i < editSteps.length - 1) { const t = editSteps[i + 1]; editSteps[i + 1] = editSteps[i]; editSteps[i] = t; if (_editExpandedPanel) _editExpandedPanel = null; }
+    else if (act === 'remove') { editSteps.splice(i, 1); if (!editSteps.length) editSteps.push({ engine: 'glitch', on: true }); _editExpandedPanel = null; }
+    else if (act === 'famtoggle') {
+      _editExpandedPanel = (_editExpandedPanel && _editExpandedPanel.kind === 'fam' && _editExpandedPanel.i === i) ? null : { i, kind: 'fam' };
+    } else if (act === 'glitchtoggle') {
+      _editExpandedPanel = (_editExpandedPanel && _editExpandedPanel.kind === 'glitch' && _editExpandedPanel.i === i) ? null : { i, kind: 'glitch' };
+    } else if (act === 'setfam') {
+      editSteps[i].family = btn.dataset.fam;
+    } else if (act === 'glitchanimate') {
+      scrAnimateOn = !scrAnimateOn;
+      const mBtn = document.getElementById('btnScrashAnimate');
+      if (mBtn) mBtn.classList.toggle('active', scrAnimateOn);
+      if (typeof _syncScrashEditorPane === 'function') _syncScrashEditorPane();
+    }
     _editRenderLayers();
     _editSyncPersisted();
   });
 
   document.getElementById('btnEditAddCam').addEventListener('click', () => {
     if (editSteps.length >= 3) return;
-    editSteps.push({ engine: 'cam', on: true });
+    editSteps.push({ engine: 'cam', on: true, family: camFamily });
     _editRenderLayers(); _editSyncPersisted();
   });
   document.getElementById('btnEditAddGlitch').addEventListener('click', () => {
@@ -19905,11 +20085,12 @@ function _editLoop(ts) {
     editSteps.push({ engine: 'glitch', on: true });
     _editRenderLayers(); _editSyncPersisted();
   });
-  document.getElementById('editCamHint').addEventListener('click', () => switchTab('cam'));
 
   // ── Source pills ─────────────────────────────────────────────────────
   function _editSetSourcePill(type) {
     document.querySelectorAll('.edit-src-pill').forEach(b => b.classList.toggle('active', b.dataset.editSrc === type));
+    const sens = document.getElementById('editAudioSens');
+    if (sens) sens.style.display = (type === 'audio') ? 'flex' : 'none';
   }
   document.getElementById('editSrcCam').addEventListener('click', () => {
     editSource = { type: 'cam' };
@@ -19962,32 +20143,31 @@ function _editLoop(ts) {
     }
   });
 
-  // ── GLITCH mini-sliders — mirror scrWaveVal/scrChromaVal/scrChaosVal
-  // (the same globals _applyScrash reads) and, if present, the GLITCH
-  // tab's own #scrWave/#scrChroma/#scrChaos sliders + value spans.
-  function _editMiniSlider(id, valId, mirrorId, mirrorValId, setter) {
-    const el = document.getElementById(id), vEl = document.getElementById(valId);
-    el.addEventListener('input', () => {
-      setter(+el.value);
-      vEl.textContent = el.value;
-      const mEl = document.getElementById(mirrorId), mVEl = document.getElementById(mirrorValId);
-      if (mEl) mEl.value = el.value;
-      if (mVEl) mVEl.textContent = el.value;
-      saveSettings();
-      if (uploadMode === 'scrash' && lastUploadSrc) renderUploadPreview();
+  // ── Audio source sensitivity — mirrors #extGainSlider/#extGainVal and
+  // writes extInGainVal + the live gain node, same pattern as the desktop
+  // EXT AUDIO panel and the mobile mic long-press cycle.
+  (function _initEditAudioGain() {
+    const slider = document.getElementById('editAudioGain');
+    const label = document.getElementById('vEditAudioGain');
+    if (!slider) return;
+    slider.value = extInGainVal;
+    if (label) label.textContent = extInGainVal.toFixed(1) + 'x';
+    slider.addEventListener('input', () => {
+      extInGainVal = parseFloat(slider.value) || 1;
+      if (label) label.textContent = extInGainVal.toFixed(1) + 'x';
+      if (extInGainNode) extInGainNode.gain.value = extInGainVal;
+      const mSlider = document.getElementById('extGainSlider');
+      const mLabel = document.getElementById('extGainVal');
+      if (mSlider) mSlider.value = extInGainVal;
+      if (mLabel) mLabel.textContent = extInGainVal.toFixed(1) + 'x';
+      try { localStorage.setItem('flip_ext_gain', String(extInGainVal)); } catch(_) {}
     });
-  }
-  _editMiniSlider('editWave',   'vEditWave',   'scrWave',   'vScrWave',   v => { scrWaveVal = v; });
-  _editMiniSlider('editChroma', 'vEditChroma', 'scrChroma', 'vScrChroma', v => { scrChromaVal = v; });
-  _editMiniSlider('editChaos',  'vEditChaos',  'scrChaos',  'vScrChaos',  v => { scrChaosVal = v; });
-  function _editSyncMiniFromGlobals() {
-    const set = (id, vid, val) => {
-      const e = document.getElementById(id); if (e) e.value = val;
-      const v = document.getElementById(vid); if (v) v.textContent = val;
-    };
-    set('editWave', 'vEditWave', scrWaveVal);
-    set('editChroma', 'vEditChroma', scrChromaVal);
-    set('editChaos', 'vEditChaos', scrChaosVal);
+  })();
+  function _editSyncAudioGainUI() {
+    const slider = document.getElementById('editAudioGain');
+    const label = document.getElementById('vEditAudioGain');
+    if (slider) slider.value = extInGainVal;
+    if (label) label.textContent = extInGainVal.toFixed(1) + 'x';
   }
 
   // ── HUD layout sync: keeps #editArea's bottom clear of #editHUD ──────
@@ -20058,7 +20238,7 @@ function _editLoop(ts) {
   window._editOnEnter = function () {
     _editRenderLayers();
     _editSetSourcePill(editSource.type);
-    _editSyncMiniFromGlobals();
+    _editSyncAudioGainUI();
     if (_editRestoredNoFile) {
       _editRestoredNoFile = false;
       flipToast('EDIT: la fuente guardada (foto/video) no persiste el archivo — volviendo a CAM');
