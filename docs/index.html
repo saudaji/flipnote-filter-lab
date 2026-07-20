@@ -9296,8 +9296,8 @@ const SLHT_GLYPHS = ['-','-','-','-','-','–','–','/','\\','|'];
 const SLHT_NG = SLHT_GLYPHS.length;
 
 // ── MediaPipe URLs (same model as SFLOW tab) ──────────────────────
-const SLHT_MP_WASM  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
-const SLHT_MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
+const SLHT_MP_WASM  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
+const SLHT_MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
 const SLHT_INIT_TIMEOUT_MS = 15000;
 
 function _slhtWithTimeout(task, timeoutMs = SLHT_INIT_TIMEOUT_MS) {
@@ -9315,7 +9315,7 @@ async function _slhtInitSeg() {
   _slhtSegBusy = true;
   try {
     const { ImageSegmenter, FilesetResolver } =
-      await _slhtWithTimeout(import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm'));
+      await _slhtWithTimeout(import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/+esm'));
     const vision = await _slhtWithTimeout(FilesetResolver.forVisionTasks(SLHT_MP_WASM));
     _slhtSeg = await _slhtWithTimeout(ImageSegmenter.createFromOptions(vision, {
       baseOptions: { modelAssetPath: SLHT_MP_MODEL, delegate: 'GPU' },
@@ -13080,6 +13080,7 @@ function renderFlipNav(mode) {
 (function() {
   const _origSwitch = switchTab;
   switchTab = function(tab) {
+    const reloadReadyUpdate = _flipUpdatePendingReload && !_hasPendingFlipRecordingWork();
     _origSwitch(tab);
     relayout(); // stack vars depend on auto-height HUDs — resync on every tab change
     renderFlipNav(tab);
@@ -13092,6 +13093,7 @@ function renderFlipNav(mode) {
     if (tab === 'ascii' && typeof _syncAsciiCaptureVisual === 'function') _syncAsciiCaptureVisual(!!(asciiRecorder && asciiRecorder.state !== 'inactive'));
     if (tab === 'scrash' && typeof _syncScrashCaptureVisual === 'function') _syncScrashCaptureVisual(!!(scrashRecorder && scrashRecorder.state !== 'inactive'));
     document.body.classList.toggle('up-pal-ctx', tab === 'up');
+    if (reloadReadyUpdate) _reloadFlipUpdateWhenSafe();
   };
 })();
 
@@ -14204,12 +14206,36 @@ function _pickFlipRecorderMime(stream) {
   const candidates = _getFlipRecorderMimeCandidates(hasAudio);
   return candidates.find(m => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(m)) || '';
 }
+const _flipTrackedRecorders = new Set();
+let _flipRecorderFinalizing = 0;
+let _flipUpdatePendingReload = false;
+function _trackFlipRecorder(recorder) {
+  _flipTrackedRecorders.add(recorder);
+  recorder.addEventListener?.('stop', () => _flipTrackedRecorders.delete(recorder), { once: true });
+  return recorder;
+}
+function _hasActiveFlipRecording() {
+  return [..._flipTrackedRecorders].some(recorder => recorder.state === 'recording');
+}
+function _hasPendingFlipRecordingWork() {
+  return _hasActiveFlipRecording() || _flipRecorderFinalizing > 0;
+}
+function _reloadFlipUpdateWhenSafe() {
+  if (!navigator.serviceWorker.controller) return false;
+  if (_hasPendingFlipRecordingWork()) {
+    if (!_flipUpdatePendingReload) flipToast('actualización lista al cerrar');
+    _flipUpdatePendingReload = true;
+    return false;
+  }
+  location.reload();
+  return true;
+}
 function _createFlipRecorder(stream, videoBitsPerSecond) {
   const mime = _pickFlipRecorderMime(stream);
   const opts = { videoBitsPerSecond };
   if (stream && stream.getAudioTracks && stream.getAudioTracks().length) opts.audioBitsPerSecond = 128000;
   if (mime) opts.mimeType = mime;
-  const recorder = new MediaRecorder(stream, opts);
+  const recorder = _trackFlipRecorder(new MediaRecorder(stream, opts));
   return { recorder, mime: recorder.mimeType || mime || '' };
 }
 function _resolveRecordedMime(preferredMime, chunks = []) {
@@ -15036,8 +15062,20 @@ function _bindRecorderFinalize(rec, { addChunk, onFinalize, finalizeDelay = 120 
   let stopSeen = false;
   let finished = false;
   let finishTimer = 0;
+  let finalizeTracked = false;
+  const trackFinalize = () => {
+    if (finalizeTracked) return;
+    finalizeTracked = true;
+    _flipRecorderFinalizing++;
+  };
+  const releaseFinalize = () => {
+    if (!finalizeTracked) return;
+    finalizeTracked = false;
+    _flipRecorderFinalizing = Math.max(0, _flipRecorderFinalizing - 1);
+  };
   const requestStopFinalize = (delay = finalizeDelay + 420) => {
     stopSeen = true;
+    trackFinalize();
     scheduleFinalize(delay);
   };
   const scheduleFinalize = (delay = finalizeDelay) => {
@@ -15049,6 +15087,7 @@ function _bindRecorderFinalize(rec, { addChunk, onFinalize, finalizeDelay = 120 
       finishTimer = 0;
       try { await onFinalize(); }
       catch (err) { console.error('Recorder finalize failed', err); }
+      finally { releaseFinalize(); }
     }, Math.max(0, delay));
   };
   rec.ondataavailable = e => {
@@ -15057,10 +15096,12 @@ function _bindRecorderFinalize(rec, { addChunk, onFinalize, finalizeDelay = 120 
   };
   rec.onstop = () => {
     stopSeen = true;
+    trackFinalize();
     scheduleFinalize(finalizeDelay);
   };
   rec.onerror = () => {
     stopSeen = true;
+    trackFinalize();
     scheduleFinalize(0);
   };
   rec.__flipPrepareStop = requestStopFinalize;
@@ -17109,7 +17150,7 @@ btnSonoRec.addEventListener('click', async () => {
     if (sonoMime) sonoRecOpts.mimeType = sonoMime;
     if (sonoRecStream.getAudioTracks().length) sonoRecOpts.audioBitsPerSecond = 128_000;
     try {
-      sonoRecorder = new MediaRecorder(sonoRecStream, sonoRecOpts);
+      sonoRecorder = _trackFlipRecorder(new MediaRecorder(sonoRecStream, sonoRecOpts));
       sonoRecMime = sonoRecorder.mimeType || sonoMime || '';
     } catch(e) {
       sonoCanvasCapture.stop();
@@ -18140,7 +18181,7 @@ btnWmpRec.addEventListener('click', async () => {
     if (wmpMime) wmpRecOpts.mimeType = wmpMime;
     if (wmpRecStream.getAudioTracks().length) wmpRecOpts.audioBitsPerSecond = 128_000;
     try {
-      wmpRecorder = new MediaRecorder(wmpRecStream, wmpRecOpts);
+      wmpRecorder = _trackFlipRecorder(new MediaRecorder(wmpRecStream, wmpRecOpts));
       wmpRecMime = wmpRecorder.mimeType || wmpMime || '';
     } catch(e) {
       wmpCanvasCapture.stop();
@@ -19689,8 +19730,8 @@ if (screen.width > 768) {
     b = Math.round(b + (255 - b) * t);
     return `rgb(${r},${g},${b})`;
   }
-  const MEDIAPIPE_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
-  const MEDIAPIPE_MODEL= 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
+  const MEDIAPIPE_WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
+  const MEDIAPIPE_MODEL= 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite';
 
   // ── Elements ────────────────────────────────────────────────────────
   const sfVid     = document.getElementById('sflowVid');
@@ -19747,7 +19788,7 @@ if (screen.width > 768) {
     _sfBadge('FLOW — loading AI…');
     try {
       const { ImageSegmenter, FilesetResolver } =
-        await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm');
+        await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/+esm');
       const vision = await FilesetResolver.forVisionTasks(MEDIAPIPE_WASM);
       _sfSegmenter = await ImageSegmenter.createFromOptions(vision, {
         baseOptions    : { modelAssetPath: MEDIAPIPE_MODEL, delegate: 'GPU' },
@@ -22194,11 +22235,16 @@ function _initFlipOsBoot() {
 _initFlipOsBoot();
 
 if ('serviceWorker' in navigator) {
+  const hadServiceWorkerController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js?v=20260415-flip-os-beta-1').then(reg => {
     reg.update().catch(()=>{});
     reg.addEventListener('updatefound', () => {
-      reg.installing.addEventListener('statechange', function() {
-        if (this.state === 'activated') location.reload();
+      const installing = reg.installing;
+      if (!installing) return;
+      installing.addEventListener('statechange', function() {
+        if (this.state !== 'activated') return;
+        if (!hadServiceWorkerController || !navigator.serviceWorker.controller) return;
+        _reloadFlipUpdateWhenSafe();
       });
     });
   }).catch(()=>{});
