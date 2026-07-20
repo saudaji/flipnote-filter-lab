@@ -6615,6 +6615,12 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
 }
 
 function renderCaskia(source, srcW, srcH, targetCtx, mirror) {
+  if (camVariant !== 'SEIKO') {
+    _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror);
+    return;
+  }
+  const outW = Math.max(1, Math.round(targetCtx.canvas?.width || OUT_W));
+  const outH = Math.max(1, Math.round(targetCtx.canvas?.height || OUT_H));
   const [sx, sy, sw, sh] = cropCoords(srcW, srcH);
   ctxS.save();
   if (mirror) { ctxS.translate(DSI_W, 0); ctxS.scale(-1, 1); }
@@ -6697,90 +6703,22 @@ function renderCaskia(source, srcW, srcH, targetCtx, mirror) {
     }
     _caskiaSeikoPrimed = true;
     _caskiaSeikoGridCtx.putImageData(frame, 0, 0);
-    targetCtx.clearRect(0, 0, OUT_W, OUT_H);
+    targetCtx.clearRect(0, 0, outW, outH);
     targetCtx.fillStyle = `rgb(${scenePalette[0][0]},${scenePalette[0][1]},${scenePalette[0][2]})`;
-    targetCtx.fillRect(0, 0, OUT_W, OUT_H);
+    targetCtx.fillRect(0, 0, outW, outH);
     targetCtx.save();
     targetCtx.imageSmoothingEnabled = true;
     targetCtx.imageSmoothingQuality = 'high';
     const outBlur = 0.02 + soft * 0.26;
     targetCtx.filter = outBlur > 0.12 ? `blur(${outBlur.toFixed(2)}px)` : 'none';
     targetCtx.globalAlpha = 0.985;
-    targetCtx.drawImage(_caskiaSeikoGridCvs, 0, 0, OUT_W, OUT_H);
+    targetCtx.drawImage(_caskiaSeikoGridCvs, 0, 0, outW, outH);
     targetCtx.filter = 'none';
     targetCtx.globalAlpha = 1;
     targetCtx.restore();
-    targetCtx.drawImage(_caskiaSeikoOverlayCvs, 0, 0);
+    targetCtx.drawImage(_caskiaSeikoOverlayCvs, 0, 0, outW, outH);
     return;
   }
-
-  const lum = _fillCamLumBuf(src);
-  if (camVariant !== 'E-INK') {
-    for (let y = 0; y < DSI_H; y++) {
-      for (let x = 0; x < DSI_W; x++) {
-        const idx = y * DSI_W + x;
-        const i = idx << 2;
-        const bayer = CASKIA_DITHER_4X4[((y & 3) << 2) | (x & 3)];
-        const ditLum = Math.max(0, Math.min(255, lum[idx] + (bayer >> 2) - 32));
-        let band;
-        if      (ditLum > 192) band = 0;
-        else if (ditLum > 128) band = 1;
-        else if (ditLum >  64) band = 2;
-        else                   band = 3;
-        const c = CASKIA_LCD_COLS[band];
-        lowBuf[i]   = c[0];
-        lowBuf[i+1] = c[1];
-        lowBuf[i+2] = c[2];
-        lowBuf[i+3] = 255;
-      }
-    }
-    ctxS.putImageData(new ImageData(lowBuf, DSI_W, DSI_H), 0, 0);
-    targetCtx.imageSmoothingEnabled = false;
-    targetCtx.drawImage(small, 0, 0, OUT_W, OUT_H);
-    targetCtx.drawImage(_caskiaScanCvs, 0, 0);
-    return;
-  }
-
-  const memory = _ensureCaskiaEInkMemory();
-  let minG = 255, maxG = 0;
-  for (let i = 0; i < lum.length; i++) {
-    if (lum[i] < minG) minG = lum[i];
-    if (lum[i] > maxG) maxG = lum[i];
-  }
-  const range = maxG - minG || 1;
-
-  for (let y = 0; y < DSI_H; y++) {
-    for (let x = 0; x < DSI_W; x++) {
-      const idx = y * DSI_W + x;
-      const i = idx << 2;
-      const base = ((lum[idx] - minG) * 255 / range) || 0;
-      const left = x ? lum[idx - 1] : lum[idx];
-      const up   = y ? lum[idx - DSI_W] : lum[idx];
-      const edge = Math.abs(lum[idx] - left) * 0.42 + Math.abs(lum[idx] - up) * 0.28;
-      const dry  = Math.max(0, Math.min(255, base * 0.92 + edge - 8));
-      const prev = _caskiaEInkPrimed ? memory[idx] : dry;
-      const dither = (CASKIA_DITHER_4X4[((y & 3) << 2) | (x & 3)] - 128) * 0.08;
-      const paper  = (((x * 13 + y * 7) & 15) - 7.5) * 0.9;
-      const mixed  = Math.max(0, Math.min(255, dry * 0.86 + prev * 0.14 + dither + paper));
-      memory[idx]  = prev * 0.93 + dry * 0.07;
-      let band;
-      if      (mixed > 224) band = 0;
-      else if (mixed > 176) band = 1;
-      else if (mixed > 124) band = 2;
-      else if (mixed >  72) band = 3;
-      else                  band = 4;
-      const c = CASKIA_EINK_COLS[band];
-      lowBuf[i]   = c[0];
-      lowBuf[i+1] = c[1];
-      lowBuf[i+2] = c[2];
-      lowBuf[i+3] = 255;
-    }
-  }
-  _caskiaEInkPrimed = true;
-  ctxS.putImageData(new ImageData(lowBuf, DSI_W, DSI_H), 0, 0);
-  targetCtx.imageSmoothingEnabled = false;
-  targetCtx.drawImage(small, 0, 0, OUT_W, OUT_H);
-  targetCtx.drawImage(_caskiaEInkOverlayCvs, 0, 0);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -8746,40 +8684,42 @@ function _oscamRenderDigital(sig, palette, cfg, now) {
   _oscamPersistCtx.drawImage(_oscamFrameCvs, 0, 0);
 }
 function _oscamCompose(targetCtx, palette, sourceCanvas, mode, traceN) {
+  const outW = Math.max(1, Math.round(targetCtx.canvas?.width || OUT_W));
+  const outH = Math.max(1, Math.round(targetCtx.canvas?.height || OUT_H));
   targetCtx.fillStyle = _oscamRGBA(palette.bg, 1);
-  targetCtx.fillRect(0, 0, OUT_W, OUT_H);
-  targetCtx.drawImage(sourceCanvas, 0, 0);
+  targetCtx.fillRect(0, 0, outW, outH);
+  targetCtx.drawImage(sourceCanvas, 0, 0, outW, outH);
   targetCtx.save();
   targetCtx.globalCompositeOperation = 'screen';
   if (mode === 'STATIC') {
     const staticProfile = _oscamGetStaticProfile(_oscamGetConfig());
     targetCtx.globalAlpha = staticProfile.glowAlphaA;
     targetCtx.filter = `blur(${staticProfile.glowBlurA.toFixed(2)}px)`;
-    targetCtx.drawImage(sourceCanvas, 0, 0);
+    targetCtx.drawImage(sourceCanvas, 0, 0, outW, outH);
     targetCtx.globalAlpha = staticProfile.glowAlphaB;
     targetCtx.filter = `blur(${staticProfile.glowBlurB.toFixed(2)}px)`;
-    targetCtx.drawImage(sourceCanvas, 0, 0);
+    targetCtx.drawImage(sourceCanvas, 0, 0, outW, outH);
   } else if (mode === 'WAVE') {
     targetCtx.globalAlpha = 0.16 + traceN * 0.18;
     targetCtx.filter = `blur(${2.0 + traceN * 2.4}px)`;
-    targetCtx.drawImage(sourceCanvas, 0, 0);
+    targetCtx.drawImage(sourceCanvas, 0, 0, outW, outH);
     targetCtx.globalAlpha = 0.07 + traceN * 0.09;
     targetCtx.filter = `blur(${4.8 + traceN * 4.2}px)`;
-    targetCtx.drawImage(sourceCanvas, 0, 0);
+    targetCtx.drawImage(sourceCanvas, 0, 0, outW, outH);
   } else {
     targetCtx.globalAlpha = 0.07 + traceN * 0.08;
     targetCtx.filter = `blur(${0.8 + traceN * 1.4}px)`;
-    targetCtx.drawImage(sourceCanvas, 0, 0);
+    targetCtx.drawImage(sourceCanvas, 0, 0, outW, outH);
     targetCtx.globalAlpha = 0.04 + traceN * 0.05;
     targetCtx.filter = `blur(${2.4 + traceN * 2.2}px)`;
-    targetCtx.drawImage(sourceCanvas, 0, 0);
+    targetCtx.drawImage(sourceCanvas, 0, 0, outW, outH);
   }
   targetCtx.filter = 'none';
   targetCtx.globalAlpha = 1;
   targetCtx.globalCompositeOperation = 'source-over';
   targetCtx.restore();
   if (_oscamOverlaySignature !== `${OUT_W}x${OUT_H}:${_oscamGetModeKey()}:${oscamColorMode}:${_oscamGetModeKey() === 'STATIC' ? oscamDefinitionVal : 'base'}`) _buildOscamOverlay();
-  targetCtx.drawImage(_oscamOverlayCvs, 0, 0);
+  targetCtx.drawImage(_oscamOverlayCvs, 0, 0, outW, outH);
 }
 function _renderOscamLegacy(source, srcW, srcH, targetCtx, mirror) {
   const [sx, sy, sw, sh] = cropCoords(srcW, srcH);
@@ -8820,8 +8760,10 @@ function _renderOscamLegacyScoped(source, srcW, srcH, targetCtx, mirror, options
   return _withOscamRenderState(state, () => _renderOscamLegacy(source, srcW, srcH, targetCtx, mirror));
 }
 function _oscamDrawOverlayOnly(targetCtx) {
+  const outW = Math.max(1, Math.round(targetCtx.canvas?.width || OUT_W));
+  const outH = Math.max(1, Math.round(targetCtx.canvas?.height || OUT_H));
   if (_oscamOverlaySignature !== `${OUT_W}x${OUT_H}:${_oscamGetModeKey()}:${oscamColorMode}:${_oscamGetModeKey() === 'STATIC' ? oscamDefinitionVal : 'base'}`) _buildOscamOverlay();
-  targetCtx.drawImage(_oscamOverlayCvs, 0, 0);
+  targetCtx.drawImage(_oscamOverlayCvs, 0, 0, outW, outH);
 }
 const _oscamWebGLEngine = (() => {
   const PROC_W = 384;
@@ -9237,6 +9179,8 @@ const _oscamWebGLEngine = (() => {
   };
 })();
 function renderOscam(source, srcW, srcH, targetCtx, mirror) {
+  const outW = Math.max(1, Math.round(targetCtx.canvas?.width || OUT_W));
+  const outH = Math.max(1, Math.round(targetCtx.canvas?.height || OUT_H));
   const cfg = _oscamGetConfig();
   const mode = _oscamGetModeKey();
   const palette = _oscamGetModePalette();
@@ -9248,7 +9192,7 @@ function renderOscam(source, srcW, srcH, targetCtx, mirror) {
   }
   const forceLegacy = /Android/i.test(navigator.userAgent);
   if (!forceLegacy && _oscamWebGLEngine.render(source, srcW, srcH, mirror, mode, cfg, palette)) {
-    targetCtx.drawImage(_oscamWebGLEngine.canvas, 0, 0, OUT_W, OUT_H);
+    targetCtx.drawImage(_oscamWebGLEngine.canvas, 0, 0, outW, outH);
     _oscamDrawOverlayOnly(targetCtx);
     return;
   }
