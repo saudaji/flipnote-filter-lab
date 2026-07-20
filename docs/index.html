@@ -2827,6 +2827,7 @@
             <button class="typo-pill" data-typo-ink="red" type="button"><span style="color:#FF3B30">●</span></button>
             <button class="typo-pill" data-typo-ink="violet" type="button"><span style="color:#B388FF">●</span></button>
             <button class="typo-pill" data-typo-ink="black" type="button"><span style="color:#111111">●</span></button>
+            <label class="typo-pill" style="padding:0 6px" title="Color libre">🎨<input type="color" id="typoInkPicker" value="#F4F1E8" style="width:20px;height:20px;padding:0;border:0;background:none;vertical-align:middle;margin-left:4px"></label>
           </div>
         </div>
         <div class="typo-row">
@@ -2838,6 +2839,7 @@
             <button class="typo-pill" data-typo-paper="navy" type="button"><span style="color:#0D1B2A">●</span></button>
             <button class="typo-pill" data-typo-paper="cream" type="button"><span style="color:#EFE6D5">●</span></button>
             <button class="typo-pill" data-typo-paper="wine" type="button"><span style="color:#2A0E1C">●</span></button>
+            <label class="typo-pill" style="padding:0 6px" title="Color libre">🎨<input type="color" id="typoPaperPicker" value="#0A0A0A" style="width:20px;height:20px;padding:0;border:0;background:none;vertical-align:middle;margin-left:4px"></label>
           </div>
         </div>
         <div class="typo-row">
@@ -2946,6 +2948,7 @@
             <button class="typo-pill" data-ascii-ink="red" type="button"><span style="color:#FF3B30">●</span></button>
             <button class="typo-pill" data-ascii-ink="violet" type="button"><span style="color:#B388FF">●</span></button>
             <button class="typo-pill" data-ascii-ink="black" type="button"><span style="color:#111111">●</span></button>
+            <label class="typo-pill" style="padding:0 6px" title="Color libre">🎨<input type="color" id="asciiInkPicker" value="#F4F1E8" style="width:20px;height:20px;padding:0;border:0;background:none;vertical-align:middle;margin-left:4px"></label>
           </div>
         </div>
         <div class="typo-row">
@@ -2957,6 +2960,7 @@
             <button class="typo-pill" data-ascii-paper="navy" type="button"><span style="color:#0D1B2A">●</span></button>
             <button class="typo-pill" data-ascii-paper="cream" type="button"><span style="color:#EFE6D5">●</span></button>
             <button class="typo-pill" data-ascii-paper="wine" type="button"><span style="color:#2A0E1C">●</span></button>
+            <label class="typo-pill" style="padding:0 6px" title="Color libre">🎨<input type="color" id="asciiPaperPicker" value="#0A0A0A" style="width:20px;height:20px;padding:0;border:0;background:none;vertical-align:middle;margin-left:4px"></label>
           </div>
         </div>
       </div>
@@ -4125,6 +4129,25 @@ function _hexToRgbStr(hex) {
   const n = parseInt(hex.slice(1), 16);
   return `${(n >> 16) & 255},${(n >> 8) & 255},${n & 255}`;
 }
+const _HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+function _cssColorLum(str) {
+  if (!str) return 128;
+  const s = String(str);
+  if (s[0] === '#' && _HEX_COLOR_RE.test(s)) {
+    const n = parseInt(s.slice(1), 16);
+    return 0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+  }
+  const m = s.match(/[\d.]+/g);
+  if (!m || m.length < 3) return 128;
+  const r = +m[0], g = +m[1], b = +m[2];
+  return 0.299 * r + 0.587 * g + 0.114 * b;
+}
+// True when the paper is darker than the ink: density mapping must flip so bright
+// source pixels (not dark ones) receive the dense/ink-heavy glyphs — keeps the
+// render a visual "positive" of the source regardless of the chosen palette.
+function _asciiInvertMap(inkCss, paperCss) {
+  return _cssColorLum(paperCss) < _cssColorLum(inkCss);
+}
 const EARLY_IS_ANDROID = /Android/i.test(navigator.userAgent);
 const EARLY_IS_MOBILE = window.innerWidth <= 768 || /Mobi|Android/i.test(navigator.userAgent);
 const _flipUrlParams = new URLSearchParams(window.location.search);
@@ -4218,6 +4241,10 @@ let typoInkKey = 'auto';
 let typoPaperKey = 'auto';
 let asciiInkKey = 'auto';
 let asciiPaperKey = 'auto';
+let typoInkCustom = '#F4F1E8';
+let typoPaperCustom = '#0A0A0A';
+let asciiInkCustom = '#F4F1E8';
+let asciiPaperCustom = '#0A0A0A';
 let typoFieldVal = 60;
 let typoPhotoThreshold = 128;
 let typoGyroStrength = 60;
@@ -4433,6 +4460,10 @@ function _syncTypoCamUI() {
   document.querySelectorAll('[data-typo-paper]').forEach(btn => btn.classList.toggle('active', btn.dataset.typoPaper === typoPaperKey));
   document.querySelectorAll('[data-ascii-ink]').forEach(btn => btn.classList.toggle('active', btn.dataset.asciiInk === asciiInkKey));
   document.querySelectorAll('[data-ascii-paper]').forEach(btn => btn.classList.toggle('active', btn.dataset.asciiPaper === asciiPaperKey));
+  { const el = document.getElementById('typoInkPicker'); if (el && _HEX_COLOR_RE.test(typoInkCustom)) el.value = typoInkCustom; }
+  { const el = document.getElementById('typoPaperPicker'); if (el && _HEX_COLOR_RE.test(typoPaperCustom)) el.value = typoPaperCustom; }
+  { const el = document.getElementById('asciiInkPicker'); if (el && _HEX_COLOR_RE.test(asciiInkCustom)) el.value = asciiInkCustom; }
+  { const el = document.getElementById('asciiPaperPicker'); if (el && _HEX_COLOR_RE.test(asciiPaperCustom)) el.value = asciiPaperCustom; }
   const photoThreshRow = document.getElementById('typoPhotoThreshRow');
   const photoThreshEl = document.getElementById('typoPhotoThresh');
   const photoThreshVal = document.getElementById('vTypoPhotoThresh');
@@ -5202,9 +5233,11 @@ function _getPal(forUpload) {
 
 function _getAsciiClassicColors(forUpload) {
   const pal = _getPal(forUpload || false);
-  const ink = asciiInkKey !== 'auto' ? _hexToRgbStr(TYPO_INKS[asciiInkKey]) : pal.ink.join(',');
-  const paper = asciiPaperKey !== 'auto' ? _hexToRgbStr(TYPO_PAPERS[asciiPaperKey]) : pal.paper.join(',');
-  return { ink, paper };
+  const ink = asciiInkKey === 'custom' ? _hexToRgbStr(asciiInkCustom)
+    : asciiInkKey !== 'auto' ? _hexToRgbStr(TYPO_INKS[asciiInkKey]) : pal.ink.join(',');
+  const paper = asciiPaperKey === 'custom' ? _hexToRgbStr(asciiPaperCustom)
+    : asciiPaperKey !== 'auto' ? _hexToRgbStr(TYPO_PAPERS[asciiPaperKey]) : pal.paper.join(',');
+  return { ink, paper, invertMap: _asciiInvertMap(ink, paper) };
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -11086,8 +11119,13 @@ function _getTypoVisualGlyphs(paletteKey, fontPreset, fontPx) {
   return cached;
 }
 
-function _getTypoGlyph(brightness, glyphs) {
-  const t = Math.max(0, Math.min(1, 1 - brightness / 255));
+function _getTypoGlyph(brightness, glyphs, invertMap) {
+  // NOTE: glyphs[] is ordered DENSE→SPARSE (glyphs[0] has the highest ink-coverage
+  // score) — the reverse of the classic ASCII_GRADIENTS strings (sparse→dense).
+  // So the invert condition here is the mirror of _renderASCIISync's: when the
+  // paper is darker than the ink (invertMap), dense glyphs must land on BRIGHT
+  // source pixels; otherwise (light paper/dark ink) dense glyphs land on DARK ones.
+  const t = Math.max(0, Math.min(1, invertMap ? (1 - brightness / 255) : (brightness / 255)));
   const idx = Math.min(glyphs.length - 1, Math.max(0, Math.round(t * (glyphs.length - 1))));
   return glyphs[idx];
 }
@@ -11153,7 +11191,12 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
   }
   const rng = maxG - minG || 1;
 
-  ctxAscii.fillStyle = typoPaperKey !== 'auto' ? TYPO_PAPERS[typoPaperKey] : `rgb(${pal.paper})`;
+  const typoPaperFill = typoPaperKey === 'custom' ? typoPaperCustom
+    : typoPaperKey !== 'auto' ? TYPO_PAPERS[typoPaperKey] : `rgb(${pal.paper})`;
+  const typoInkFillPre = typoInkKey === 'custom' ? typoInkCustom
+    : typoInkKey !== 'auto' ? TYPO_INKS[typoInkKey] : `rgb(${pal.ink})`;
+  const typoInvertMap = _asciiInvertMap(typoInkFillPre, typoPaperFill);
+  ctxAscii.fillStyle = typoPaperFill;
   ctxAscii.fillRect(0, 0, OUT_W, OUT_H);
   ctxAscii.font = cache.font;
   ctxAscii.textBaseline = 'top';
@@ -11186,7 +11229,7 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
       const raw = count ? gSum / count : 128;
       const t = (raw - minG) / rng;
       const eased = acThreshOn ? (raw < acThreshVal ? 0 : 255) : (0.5 - 0.5 * Math.cos(Math.PI * (0.5 - 0.5 * Math.cos(Math.PI * t)))) * 255;
-      const glyph = _getTypoGlyph(eased, cache.glyphs);
+      const glyph = _getTypoGlyph(eased, cache.glyphs, typoInvertMap);
       if (lineWidth + glyph.width > fw) break;
       line += glyph.char;
       lineWidth += glyph.width;
@@ -11202,8 +11245,8 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
     rowGlyphs.push(glyphRow);
   }
 
-  const monoFill = typoInkKey !== 'auto' ? TYPO_INKS[typoInkKey] : `rgb(${pal.ink})`;
-  const tintFill = typoInkKey !== 'auto' ? TYPO_INKS[typoInkKey] : '#FF6B35';
+  const monoFill = typoInkFillPre;
+  const tintFill = typoInkKey === 'custom' ? typoInkCustom : (typoInkKey !== 'auto' ? TYPO_INKS[typoInkKey] : '#FF6B35');
   const lineLeft = acFrameVal;
   const lineRight = acFrameVal + fw;
   for (let row = 0; row < rowGlyphs.length; row++) {
@@ -11405,7 +11448,8 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
         lum = s2 * 255;
       }
 
-      const ci = Math.min(Math.floor((1 - lum / 255) * nChars), nChars - 1);
+      const densT = acColors.invertMap ? (lum / 255) : (1 - lum / 255);
+      const ci = Math.min(Math.floor(densT * nChars), nChars - 1);
       const ch = grad[ci];
       line += ch;
 
@@ -11527,7 +11571,8 @@ function _asciiWorkerBody() {
         let lum;
         if (s.threshOn) { lum=raw<s.thresh?0:255; }
         else { const t=(raw-minG)/rng; const s1=0.5-0.5*Math.cos(Math.PI*t); lum=(0.5-0.5*Math.cos(Math.PI*s1))*255; }
-        const ci=Math.min(Math.floor((1-lum/255)*nChars),nChars-1);
+        const densT=s.invertMap?(lum/255):(1-lum/255);
+        const ci=Math.min(Math.floor(densT*nChars),nChars-1);
         const ch=grad[ci];
         line += ch;
         if (ci>=s.space) {
@@ -11601,7 +11646,7 @@ function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
     gradient: acGradientVal, space: acSpaceVal, frame: acFrameVal,
     pyMode: pySubMode, pyPal: pyPalIdx, chaos: chaosVal,
     outW: OUT_W, outH: OUT_H,
-    palInk: acColors.ink, palPaper: acColors.paper,
+    palInk: acColors.ink, palPaper: acColors.paper, invertMap: acColors.invertMap,
   };
   if (_asciiWorkerBusy) { _asciiWorkerPend = {imgData, sw, sh}; return; }
   _asciiWorkerBusy = true;
@@ -11663,7 +11708,8 @@ function renderASCIIAudio() {
       // Character density: loud = dense chars, quiet = sparse/spaces
       const noiseT = Math.sin(c * 0.7 + T * 2.1) * 0.5 + 0.5;
       const density = Math.max(0, Math.min(1, energy * 1.4 + rms * 0.4 + noiseT * 0.1));
-      const ci = Math.min(Math.floor((1 - density) * nChars), nChars - 1);
+      const densT = acColors.invertMap ? density : (1 - density);
+      const ci = Math.min(Math.floor(densT * nChars), nChars - 1);
       if (ci >= nChars - 1) continue; // skip space-equivalent
       ctxAscii.fillText(grad[ci], acFrameVal + c * cW, acFrameVal + r * cH);
     }
@@ -12319,6 +12365,7 @@ function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
   const paperKey = p.paper || 'auto';
   const ink = (inkKey !== 'auto' && TYPO_INKS[inkKey]) ? _hexToRgbStr(TYPO_INKS[inkKey]) : _getAsciiClassicColors(false).ink;
   const paper = (paperKey !== 'auto' && TYPO_PAPERS[paperKey]) ? _hexToRgbStr(TYPO_PAPERS[paperKey]) : _getAsciiClassicColors(false).paper;
+  const stepInvertMap = _asciiInvertMap(ink, paper);
 
   targetCtx.fillStyle = `rgb(${paper})`;
   targetCtx.fillRect(0, 0, W, H);
@@ -12343,7 +12390,8 @@ function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
           cnt++;
         }
       const lum = cnt ? gSum / cnt : 128;
-      const ci = Math.min(Math.floor((1 - lum / 255) * nChars), nChars - 1);
+      const densT = stepInvertMap ? (lum / 255) : (1 - lum / 255);
+      const ci = Math.min(Math.floor(densT * nChars), nChars - 1);
       const ch = grad[ci];
       if (ch !== ' ') targetCtx.fillText(ch, c * cW, r * cH);
     }
@@ -15779,7 +15827,7 @@ document.getElementById('upBtnReset').addEventListener('click', () => {
   acSepiaVal=0;acInvertVal=0;acThreshOn=false;acThreshVal=128;
   acSharpOn=false;acSharpVal=9;acEdgeOn=false;acEdgeVal=10;
   acGradientVal='normal';acSpaceVal=1;acFrameVal=0;acQualityVal='none';asciiClassicCols=100;asciiTypoCols=_getAsciiDefaultCols('typo');asciiSubMode='classic';asciiCols=asciiClassicCols;
-  typoFontPreset='sans';typoPaletteKey='classic';typoColorMode='tint';typoInkKey='auto';typoPaperKey='auto';asciiInkKey='auto';asciiPaperKey='auto';_resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true });
+  typoFontPreset='sans';typoPaletteKey='classic';typoColorMode='tint';typoInkKey='auto';typoPaperKey='auto';asciiInkKey='auto';asciiPaperKey='auto';typoInkCustom='#F4F1E8';typoPaperCustom='#0A0A0A';asciiInkCustom='#F4F1E8';asciiPaperCustom='#0A0A0A';_resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true });
   upExposureVal=0;upShadowsVal=0;upHighlightsVal=0;upDitherIntVal=100;upGrainVal=0;upVignetteVal=0;
   upPalHueVal=0;upMixVal=100;
     // Reset MIX and Palette HUE
@@ -15982,6 +16030,34 @@ document.querySelectorAll('[data-ascii-paper]').forEach(btn => btn.addEventListe
   asciiSettingsChanged();
   saveSettings();
 }));
+document.getElementById('typoInkPicker')?.addEventListener('input', e => {
+  typoInkCustom = e.target.value;
+  typoInkKey = 'custom';
+  _syncTypoCamUI();
+  asciiSettingsChanged();
+  saveSettings();
+});
+document.getElementById('typoPaperPicker')?.addEventListener('input', e => {
+  typoPaperCustom = e.target.value;
+  typoPaperKey = 'custom';
+  _syncTypoCamUI();
+  asciiSettingsChanged();
+  saveSettings();
+});
+document.getElementById('asciiInkPicker')?.addEventListener('input', e => {
+  asciiInkCustom = e.target.value;
+  asciiInkKey = 'custom';
+  _syncTypoCamUI();
+  asciiSettingsChanged();
+  saveSettings();
+});
+document.getElementById('asciiPaperPicker')?.addEventListener('input', e => {
+  asciiPaperCustom = e.target.value;
+  asciiPaperKey = 'custom';
+  _syncTypoCamUI();
+  asciiSettingsChanged();
+  saveSettings();
+});
 bindSlider('typoField', 'vTypoField', 'px', v=>parseInt(v), v=>{
   typoFieldVal = v;
   _syncTypoFieldValue();
@@ -16127,7 +16203,7 @@ document.getElementById('acReset').addEventListener('click', () => {
   document.getElementById('cbEdge'  ).checked=false;document.getElementById('acEdge'  ).disabled=true;
   document.getElementById('acGradient').value='normal';
   document.getElementById('acQuality' ).value='none';
-  typoFontPreset='sans'; typoPaletteKey='classic'; typoColorMode='tint'; typoInkKey='auto'; typoPaperKey='auto'; asciiInkKey='auto'; asciiPaperKey='auto'; _resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true }); _syncTypoCamUI();
+  typoFontPreset='sans'; typoPaletteKey='classic'; typoColorMode='tint'; typoInkKey='auto'; typoPaperKey='auto'; asciiInkKey='auto'; asciiPaperKey='auto'; typoInkCustom='#F4F1E8'; typoPaperCustom='#0A0A0A'; asciiInkCustom='#F4F1E8'; asciiPaperCustom='#0A0A0A'; _resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true }); _syncTypoCamUI();
   // Reset Smooth Mode
   _asciiSmoothMode=false; document.getElementById('btnSmoothMode').classList.remove('active');
   // Reset pythonization
@@ -18999,7 +19075,7 @@ function saveSettings() {
       sonoPreset, sonoMixVal, sonoChaosVal,
       wmpPreset: wmpPreset, wmpSensVal, wmpTrailsVal,
       uploadMode,
-      asciiCols, asciiClassicCols, asciiTypoCols, asciiSubMode, typoFontPreset, typoPaletteKey, typoColorMode, typoInkKey, typoPaperKey, asciiInkKey, asciiPaperKey, typoFieldVal, typoPhotoThreshold, typoGyroStrength,
+      asciiCols, asciiClassicCols, asciiTypoCols, asciiSubMode, typoFontPreset, typoPaletteKey, typoColorMode, typoInkKey, typoPaperKey, asciiInkKey, asciiPaperKey, typoInkCustom, typoPaperCustom, asciiInkCustom, asciiPaperCustom, typoFieldVal, typoPhotoThreshold, typoGyroStrength,
       acGradientVal, acSpaceVal, acQualityVal, acFrameVal,
       acBrightVal, acContrastVal, acSatVal, acHueVal, acGrayVal,
       acSepiaVal, acInvertVal, acThreshOn, acThreshVal,
@@ -19159,10 +19235,14 @@ function loadSettings() {
     if (s.typoFontPreset && TYPO_FONTS[s.typoFontPreset]) typoFontPreset = s.typoFontPreset;
     if (s.typoPaletteKey && TYPO_PALETTES[s.typoPaletteKey]) typoPaletteKey = s.typoPaletteKey;
     if (s.typoColorMode && TYPO_COLOR_MODES.includes(s.typoColorMode)) typoColorMode = s.typoColorMode;
-    if (s.typoInkKey && s.typoInkKey in TYPO_INKS) typoInkKey = s.typoInkKey;
-    if (s.typoPaperKey && s.typoPaperKey in TYPO_PAPERS) typoPaperKey = s.typoPaperKey;
-    if (s.asciiInkKey && s.asciiInkKey in TYPO_INKS) asciiInkKey = s.asciiInkKey;
-    if (s.asciiPaperKey && s.asciiPaperKey in TYPO_PAPERS) asciiPaperKey = s.asciiPaperKey;
+    if (s.typoInkKey && (s.typoInkKey === 'custom' || s.typoInkKey in TYPO_INKS)) typoInkKey = s.typoInkKey;
+    if (s.typoPaperKey && (s.typoPaperKey === 'custom' || s.typoPaperKey in TYPO_PAPERS)) typoPaperKey = s.typoPaperKey;
+    if (s.asciiInkKey && (s.asciiInkKey === 'custom' || s.asciiInkKey in TYPO_INKS)) asciiInkKey = s.asciiInkKey;
+    if (s.asciiPaperKey && (s.asciiPaperKey === 'custom' || s.asciiPaperKey in TYPO_PAPERS)) asciiPaperKey = s.asciiPaperKey;
+    if (s.typoInkCustom && _HEX_COLOR_RE.test(s.typoInkCustom)) typoInkCustom = s.typoInkCustom;
+    if (s.typoPaperCustom && _HEX_COLOR_RE.test(s.typoPaperCustom)) typoPaperCustom = s.typoPaperCustom;
+    if (s.asciiInkCustom && _HEX_COLOR_RE.test(s.asciiInkCustom)) asciiInkCustom = s.asciiInkCustom;
+    if (s.asciiPaperCustom && _HEX_COLOR_RE.test(s.asciiPaperCustom)) asciiPaperCustom = s.asciiPaperCustom;
     if (s.typoFieldVal !== undefined) typoFieldVal = Math.max(30, Math.min(150, Math.round(s.typoFieldVal)));
     if (s.typoPhotoThreshold !== undefined) typoPhotoThreshold = Math.max(40, Math.min(220, Math.round(s.typoPhotoThreshold)));
     if (s.typoGyroStrength !== undefined) typoGyroStrength = Math.max(10, Math.min(150, Math.round(s.typoGyroStrength)));
