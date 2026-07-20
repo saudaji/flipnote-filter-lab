@@ -1,4 +1,4 @@
-const CACHE = 'flipnote-filter-v71-stage-paridad-movil';
+const CACHE = 'flipnote-filter-v72-dual-window-catalogo';
 const ASSETS = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png', './pretext.js',
   './fonts/Bloom-Regular.otf', './fonts/BNMonica.otf', './fonts/Fluidic-Regular.otf', './fonts/Canterbury.ttf'];
 
