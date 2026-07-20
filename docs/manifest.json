@@ -1,9 +1,9 @@
 {
   "name": "Flipnote Filter",
   "short_name": "Flipnote",
-  "description": "Filtro de c\u00e1mara estilo Flipnote Studio DSi",
-  "start_url": "https://saudaji.github.io/flipnote-filter/",
-  "scope": "https://saudaji.github.io/flipnote-filter/",
+  "description": "Filtro de cámara estilo Flipnote Studio DSi",
+  "start_url": "./",
+  "scope": "./",
   "display": "fullscreen",
   "orientation": "portrait-primary",
   "theme_color": "#0F380F",
