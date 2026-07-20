@@ -32,7 +32,7 @@ async function cacheMediaPipe(request) {
   const cached = await cache.match(request);
   if (cached) return cached;
   const response = await fetch(request);
-  if (response.ok) await cache.put(request, response.clone());
+  if (response.ok) await cache.put(request, response.clone()).catch(() => {});
   return response;
 }
 
