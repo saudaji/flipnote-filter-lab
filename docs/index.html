@@ -12082,7 +12082,7 @@ function cameraLoop(t) {
         );
       }
     } else if (vid.videoWidth) {
-      _renderCamEngineFrame(vid, vid.videoWidth, vid.videoHeight, ctxD, facingMode==='user', {
+      _renderCamEngineFrame(vid, vid.videoWidth, vid.videoHeight, ctxD, false, {
         path:'preview',
         now:t,
       });
@@ -12163,7 +12163,7 @@ function asciiLoop(ts) {
     return;
   }
   if (!asciiStaticSrc && vid.videoWidth)
-    renderASCII(vid, vid.videoWidth, vid.videoHeight, facingMode==='user');
+    renderASCII(vid, vid.videoWidth, vid.videoHeight, false);
   if (!asciiStaticSrc && !vid.videoWidth && (extAudioMode || extMicOnlyMode) && extAnalyser) {
     // F5 — paridad móvil: sin cámara, el mic (extMicOnlyMode) también pinta ASCII desde audio.
     const af = _getExtAudioSourceFrame(640, 480);
@@ -14718,7 +14718,7 @@ function _getCamRecordingOptions() {
         camFamily === 'OSCAM' ||
         (camFamily === 'CASKIA' && camVariant !== 'SEIKO');
       if (isDirectCapture) {
-        _renderCamEngineFrame(vid, vid.videoWidth, vid.videoHeight, ctx, facingMode === 'user', {
+        _renderCamEngineFrame(vid, vid.videoWidth, vid.videoHeight, ctx, false, {
           path:'capture',
           now,
           resolution: options.resolution,
@@ -14729,7 +14729,7 @@ function _getCamRecordingOptions() {
       }
       const stage = _ensureCamCaptureStage();
       stage.ctx.clearRect(0, 0, OUT_W, OUT_H);
-      _renderCamEngineFrame(vid, vid.videoWidth, vid.videoHeight, stage.ctx, facingMode === 'user', {
+      _renderCamEngineFrame(vid, vid.videoWidth, vid.videoHeight, stage.ctx, false, {
         path:'capture',
         now,
         resolution: options.resolution,
@@ -15497,7 +15497,7 @@ function _getAsciiCaptureSource() {
     return { source:asciiStaticSrc, srcW:asciiStaticW, srcH:asciiStaticH, mirror:false };
   }
   if (vid && vid.videoWidth) {
-    return { source:vid, srcW:vid.videoWidth, srcH:vid.videoHeight, mirror:facingMode === 'user' };
+    return { source:vid, srcW:vid.videoWidth, srcH:vid.videoHeight, mirror:false };
   }
   return null;
 }
@@ -19573,17 +19573,8 @@ if (screen.width > 768) {
     sfCtx.fillStyle = '#000';
     sfCtx.fillRect(0, 0, CW, CH);
 
-    // Single mirror transform for the WHOLE frame (video + aura/glyphs),
-    // mirrored only for the front camera ('user' — natural selfie feel).
-    // Rear camera ('environment') draws un-mirrored. This transform stays
-    // open through the glyph pass below so the mask-derived aura/fill
-    // (sampled from the raw, un-mirrored MediaPipe mask) lands on the same
-    // screen pixels as the video it outlines — mirroring only the video and
-    // leaving glyph coords un-mirrored would desync the aura from the body.
-    if (_sfFacing === 'user') {
-      sfCtx.translate(CW, 0);
-      sfCtx.scale(-1, 1);
-    }
+    // BLOQUE 1 — sin espejo nunca: la orientación real de cámara se respeta
+    // en FLOW igual que en el resto de la app (video y aura/glifos sin flip).
 
     // Fit video into canvas (cover)
     const vAspect = VW / VH;
@@ -19949,10 +19940,9 @@ let _fusionLastFrameMs = 0;
 const fusionCanvas = document.getElementById('fusionCanvas');
 const ctxFusion = fusionCanvas.getContext('2d');
 
-// Resolve this frame's source canvas: live video (mirrored when the front
-// camera is active — the pipeline's cam step always renders with mirror:false,
-// so mirroring has to be baked into the source here) or, with no camera, the
-// EXT AUDIO waveform frame. Returns null when neither is available.
+// Resolve this frame's source canvas: live video (BLOQUE 1 — never mirrored,
+// real camera orientation everywhere) or, with no camera, the EXT AUDIO
+// waveform frame. Returns null when neither is available.
 function _fusionGetSrcCanvas() {
   const w = 640, h = 480;
   if (!_fusionSrc) _fusionSrc = document.createElement('canvas');
@@ -19960,7 +19950,6 @@ function _fusionGetSrcCanvas() {
   if (vid.videoWidth) {
     const fctx = _fusionSrc.getContext('2d');
     fctx.save();
-    if (facingMode === 'user') { fctx.translate(w, 0); fctx.scale(-1, 1); }
     fctx.drawImage(vid, 0, 0, w, h);
     fctx.restore();
     return _fusionSrc;
@@ -20149,7 +20138,6 @@ function _editGetSrcCanvas() {
   if (editSource.type === 'cam') {
     if (!vid.videoWidth) return null;
     ctx.save();
-    if (facingMode === 'user') { ctx.translate(w, 0); ctx.scale(-1, 1); }
     ctx.drawImage(vid, 0, 0, w, h);
     ctx.restore();
     return _editSrcCanvas;
@@ -20601,7 +20589,6 @@ const ctxStage = stageCanvas.getContext('2d');
       return _getExtAudioSourceFrame(w, h);
     }
     ctx.save();
-    if (facingMode === 'user') { ctx.translate(w, 0); ctx.scale(-1, 1); }
     ctx.drawImage(vid, 0, 0, w, h);
     ctx.restore();
     return _stageSrcCanvas;
