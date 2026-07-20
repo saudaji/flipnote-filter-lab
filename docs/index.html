@@ -1426,9 +1426,30 @@
     #splash {
       position:fixed; inset:0; background:#000;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
-      z-index:100; overflow:hidden; cursor:pointer;
+      z-index:100; overflow:hidden;
     }
     #splash.hidden { display:none; }
+    .splash-doors {
+      position:relative; z-index:1; display:flex; flex-direction:column;
+      gap:14px; margin-top:28px; width:min(90vw,520px);
+    }
+    @media (min-width:640px) {
+      .splash-doors { flex-direction:row; }
+    }
+    .splash-door {
+      font-family:'BN Monica', sans-serif;
+      flex:1; min-height:56px; padding:14px 18px;
+      background:none; border:1px solid #c8a000; color:#c8a000;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      gap:4px; cursor:pointer; text-decoration:none; user-select:none;
+    }
+    .splash-door:active { opacity:0.4; }
+    .splash-door-label {
+      font-size:clamp(15px,3.6vw,20px); letter-spacing:2px; text-transform:uppercase;
+    }
+    .splash-door-sub {
+      font-size:clamp(10px,2.6vw,13px); letter-spacing:1px; opacity:0.7;
+    }
     .splash-title {
       font-family:'BN Monica', sans-serif;
       font-size:clamp(48px,12vw,96px); color:#c8a000;
@@ -3050,7 +3071,16 @@
 
 <div id="splash">
   <div class="splash-title">FLIP</div>
-  <button class="splash-sub" id="btnSplashSub">make it weird</button>
+  <div class="splash-doors">
+    <button class="splash-door" id="btnSplashOriginal">
+      <span class="splash-door-label">▶ FLIP ORIGINAL</span>
+      <span class="splash-door-sub">cámara · edición · módulos</span>
+    </button>
+    <button class="splash-door" id="btnSplashStage">
+      <span class="splash-door-label">🎬 FLIP STAGE</span>
+      <span class="splash-door-sub">estación en vivo · proyector</span>
+    </button>
+  </div>
 </div>
 
 <div id="flash"></div>
@@ -3912,6 +3942,7 @@
   </div>
 </div>
 <div id="barStage">
+  <button class="btn" id="btnStageBackOriginal"><div class="btn-icon">←</div><span class="btn-label">ORIGINAL</span></button>
   <button class="btn" id="btnStageOpenOut"><div class="btn-icon">▶</div><span class="btn-label">ABRIR SALIDA</span></button>
   <button class="btn" id="btnStageCloseOut"><div class="btn-icon">✕</div><span class="btn-label">CERRAR</span></button>
   <button class="btn" id="btnStageFullscreen"><div class="btn-icon">⛶</div><span class="btn-label">FULLSCREEN</span></button>
@@ -15501,13 +15532,15 @@ async function _bootFromSplash() {
   }
 }
 
-document.getElementById('splash').addEventListener('click', () => {
+document.getElementById('btnSplashOriginal').addEventListener('click', e => {
+  e.stopPropagation();
   _bootFromSplash();
 });
 
-document.getElementById('btnSplashSub').addEventListener('click', e => {
+document.getElementById('btnSplashStage').addEventListener('click', e => {
   e.stopPropagation();
-  _bootFromSplash();
+  splash.classList.add('hidden');
+  switchTab('stage');
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -21087,6 +21120,11 @@ function _editLoop(ts) {
     if (_edRecorder && _edRecorder.state !== 'inactive') _stopRecorderSafely(_edRecorder);
   };
 
+  // ── Cross to STAGE control ────────────────────────────────────────────
+  document.getElementById('btnEditStage').addEventListener('click', () => {
+    switchTab('stage');
+  });
+
   // ── Tab entry hook — called from switchTab() when isEdit ─────────────
   window._editOnEnter = function () {
     _editRenderLayers();
@@ -21386,6 +21424,9 @@ function _stagePipelineForRender(state) {
     const el = document.getElementById('stageOutStatus');
     if (el) el.textContent = text;
   }
+  document.getElementById('btnStageBackOriginal').addEventListener('click', () => {
+    switchTab('edit');
+  });
   document.getElementById('btnStageOpenOut').addEventListener('click', () => {
     if (_stageOutHandle && !_stageOutHandle.closed) { _stageOutHandle.focus(); return; }
     _stageOutHandle = window.open(location.pathname + '#stageout', 'FLIP_STAGE_OUT', 'popup,width=1280,height=720');
