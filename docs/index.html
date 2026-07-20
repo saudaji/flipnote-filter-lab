@@ -2070,15 +2070,34 @@
        IS_STAGE_OUT near the top of the script.
     ══════════════════════════════════════════════════ */
     #stageArea { display:none; padding:8px 10px 4px; }
-    #stageArea.visible { display:block; }
+    #stageArea.visible {
+      display:block; position:fixed; top:40px; bottom:96px; left:0; right:0;
+      overflow-y:auto; -webkit-overflow-scrolling:touch;
+    }
     .stage-ctl-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0; }
     .stage-ctl-select { width:100%; background:#111; color:#fff; border:1px solid var(--dark); font-family:monospace; font-size:11px; padding:6px; }
     #stagePreviewCanvas { width:160px; height:120px; background:#000; image-rendering:pixelated; border:1px solid var(--dark); }
     #stagePreviewLabel { color:var(--mid); font-size:9px; letter-spacing:1px; max-width:140px; }
     #stageOutStatus { color:var(--mid); font-size:10px; letter-spacing:1px; }
     #stageOutStatus.error { color:#ff4444; }
-    #barStage { display:none; }
+    #barStage {
+      display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
+      background:var(--ink); border-top:2px solid var(--dark);
+      align-items:center; justify-content:space-around; padding:0 20px;
+      padding-bottom:env(safe-area-inset-bottom); z-index:10;
+    }
     #barStage.visible { display:flex; }
+    #btnStageOpenOut[aria-disabled="true"] { opacity:.35; cursor:not-allowed; }
+    body.stage-mode #flipSettingsTrigger,
+    body.stage-mode #btnMicMobile,
+    body.stage-mode #btnAudioIO,
+    body.stage-mode #audioIOPanel,
+    body.stage-mode #btnExtCapture { display:none !important; }
+    @media (max-width:767px) {
+      #barStage { padding-left:0; padding-right:0; }
+      #barStage .btn { flex:1; min-width:0; padding:8px 1px; }
+      #barStage .btn-label { font-size:8px; letter-spacing:0; }
+    }
     #btnStageRec.recording .btn-icon { background:#bb0000; border-color:#ff4444; animation:pulse 1s ease-in-out infinite; }
     /* ── OUTPUT window (#stageout) — hides all normal chrome, shows only
        the fullscreen output canvas created dynamically in JS. ── */
@@ -12796,6 +12815,7 @@ function switchTab(tab) {
   // Themes
   document.body.classList.toggle('ascii-mode', isAscii);
   document.body.classList.toggle('sono-mode',  isSono);
+  document.body.classList.toggle('stage-mode', isStage);
   // Preserve the active ASCII submode after first entry; default stays classic from initial state.
   if (isAscii) _syncTypoCamUI();
 
@@ -21507,6 +21527,11 @@ function _stagePipelineForRender(state) {
   let _stageChan = null;
   try { _stageChan = new BroadcastChannel('flip_stage'); } catch (_) { _stageChan = null; }
   let _stageBroadcastTimer = null, _stageBroadcastPending = false;
+  const _stageTouchIOS = (navigator.maxTouchPoints > 0 || 'ontouchstart' in window) &&
+    (/iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+  const btnStageOpenOut = document.getElementById('btnStageOpenOut');
+  if (_stageTouchIOS) btnStageOpenOut.setAttribute('aria-disabled', 'true');
 
   function _stageSyncPersisted() {
     window._stageState = _stageCtlState;
@@ -21710,7 +21735,11 @@ function _stagePipelineForRender(state) {
   document.getElementById('btnStageBackOriginal').addEventListener('click', () => {
     switchTab('edit');
   });
-  document.getElementById('btnStageOpenOut').addEventListener('click', () => {
+  btnStageOpenOut.addEventListener('click', () => {
+    if (_stageTouchIOS) {
+      flipToast('la salida por ventana necesita desktop — usa el preview o graba directo');
+      return;
+    }
     if (_stageOutHandle && !_stageOutHandle.closed) { _stageOutHandle.focus(); return; }
     _stageSetOutError('');
     _stageOutHandle = window.open(location.pathname + '#stageout', 'FLIP_STAGE_OUT', 'popup,width=1280,height=720');
