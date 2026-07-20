@@ -2076,17 +2076,24 @@
     #stagePreviewCanvas { width:160px; height:120px; background:#000; image-rendering:pixelated; border:1px solid var(--dark); }
     #stagePreviewLabel { color:var(--mid); font-size:9px; letter-spacing:1px; max-width:140px; }
     #stageOutStatus { color:var(--mid); font-size:10px; letter-spacing:1px; }
+    #stageOutStatus.error { color:#ff4444; }
     #barStage { display:none; }
     #barStage.visible { display:flex; }
     #btnStageRec.recording .btn-icon { background:#bb0000; border-color:#ff4444; animation:pulse 1s ease-in-out infinite; }
     /* ── OUTPUT window (#stageout) — hides all normal chrome, shows only
        the fullscreen output canvas created dynamically in JS. ── */
-    html.stage-out body > *:not(#stageOutCanvas) { display:none !important; }
+    html.stage-out body > *:not(#stageOutCanvas):not(#stageOutFullscreenPrompt) { display:none !important; }
     html.stage-out body { background:#000 !important; margin:0; }
     #stageOutCanvas {
-      position:fixed; inset:0; width:100vw; height:100vh; background:#000;
+      position:fixed; inset:0; width:100vw; height:100dvh; background:#000;
       image-rendering:pixelated; image-rendering:crisp-edges; z-index:99999;
     }
+    #stageOutFullscreenPrompt {
+      position:fixed; inset:0; z-index:100000; display:grid; place-items:center;
+      border:0; background:rgba(0,0,0,.72); color:#fff; font:700 14px monospace;
+      letter-spacing:2px; cursor:pointer;
+    }
+    #stageOutFullscreenPrompt[hidden] { display:none; }
 
     /* ── Pythonization ── */
     #pythonSection { padding:6px 12px 8px; border-top:1px solid var(--dark); }
@@ -21680,16 +21687,38 @@ function _stagePipelineForRender(state) {
   }
 
   // ── OPEN / CLOSE / FULLSCREEN / PHOTO / REC ───────────────────────────
-  function _stageSetOutStatus(text) {
+  let _stageOutStatusText = 'SALIDA: cerrada';
+  let _stageOutError = '';
+  function _stageRenderOutStatus() {
     const el = document.getElementById('stageOutStatus');
-    if (el) el.textContent = text;
+    if (!el) return;
+    el.textContent = _stageOutStatusText + (_stageOutError ? (_stageOutStatusText ? ' · ' : '') + '⚠ ' + _stageOutError : '');
+    el.classList.toggle('error', !!_stageOutError);
+  }
+  function _stageSetOutStatus(text) {
+    _stageOutStatusText = text;
+    _stageRenderOutStatus();
+  }
+  function _stageSetOutError(text) {
+    _stageOutError = text || '';
+    _stageRenderOutStatus();
+  }
+  function _stageFormatElapsed(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    return String(total / 60 | 0).padStart(2, '0') + ':' + String(total % 60).padStart(2, '0');
   }
   document.getElementById('btnStageBackOriginal').addEventListener('click', () => {
     switchTab('edit');
   });
   document.getElementById('btnStageOpenOut').addEventListener('click', () => {
     if (_stageOutHandle && !_stageOutHandle.closed) { _stageOutHandle.focus(); return; }
+    _stageSetOutError('');
     _stageOutHandle = window.open(location.pathname + '#stageout', 'FLIP_STAGE_OUT', 'popup,width=1280,height=720');
+    if (!_stageOutHandle) {
+      _stageSetOutStatus('');
+      _stageSetOutError('popup bloqueado — permite ventanas emergentes');
+      return;
+    }
     _stageSetOutStatus('SALIDA: abriendo…');
     _stageBroadcastNow();
   });
@@ -21717,6 +21746,7 @@ function _stagePipelineForRender(state) {
     const msg = e.data;
     if (!msg || !msg.type) return;
     if (msg.type === 'ready') {
+      _stageSetOutError('');
       _stageSetOutStatus('SALIDA: conectada');
       _stageBroadcastNow();
     } else if (msg.type === 'devices') {
@@ -21728,7 +21758,12 @@ function _stagePipelineForRender(state) {
     } else if (msg.type === 'status') {
       _stageRecording = !!msg.recording;
       document.getElementById('btnStageRec').classList.toggle('recording', _stageRecording);
-      _stageSetOutStatus('SALIDA: conectada · ' + (msg.fps || 0) + 'fps' + (_stageRecording ? ' · REC' : ''));
+      const workRes = Number(msg.workRes) || 0;
+      _stageSetOutStatus('SALIDA: conectada · ' + (msg.fps || 0) + 'fps' +
+        (workRes ? ' · ' + workRes + '×' + Math.round(workRes * 0.75) : '') +
+        (_stageRecording ? ' · REC ' + _stageFormatElapsed(msg.recElapsed) : ''));
+    } else if (msg.type === 'error') {
+      _stageSetOutError((msg.code || 'OUTPUT') + ': ' + (msg.detail || 'error desconocido'));
     } else if (msg.type === 'saved') {
       flipToast('💾 ' + msg.name);
     }
@@ -21775,6 +21810,34 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
 
   let chan = null;
   try { chan = new BroadcastChannel('flip_stage'); } catch (_) { chan = null; }
+  function _outReportError(code, err, fallback) {
+    const detail = err?.message || (typeof err === 'string' ? err : '') || fallback || 'error desconocido';
+    chan?.postMessage({ type: 'error', code, detail });
+  }
+
+  const fullscreenPrompt = document.createElement('button');
+  fullscreenPrompt.id = 'stageOutFullscreenPrompt';
+  fullscreenPrompt.type = 'button';
+  fullscreenPrompt.textContent = '⛶ CLICK PARA PANTALLA COMPLETA';
+  document.body.appendChild(fullscreenPrompt);
+  const _outFullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+  function _outSyncFullscreenPrompt() {
+    fullscreenPrompt.hidden = !!_outFullscreenElement();
+  }
+  async function _outRequestFullscreen() {
+    const request = canvas.requestFullscreen || canvas.webkitRequestFullscreen;
+    if (!request) { _outReportError('FULLSCREEN_UNAVAILABLE', null, 'Pantalla completa no disponible'); return; }
+    try {
+      await Promise.resolve(request.call(canvas));
+      _outSyncFullscreenPrompt();
+    } catch (err) {
+      fullscreenPrompt.hidden = false;
+      _outReportError('FULLSCREEN_FAILED', err, 'No se pudo entrar a pantalla completa');
+    }
+  }
+  fullscreenPrompt.addEventListener('click', _outRequestFullscreen);
+  document.addEventListener('fullscreenchange', _outSyncFullscreenPrompt);
+  document.addEventListener('webkitfullscreenchange', _outSyncFullscreenPrompt);
 
   let state = _stageDefaultState();
   let gotFirstState = false;
@@ -21785,14 +21848,24 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
   outVideo.style.display = 'none';
   document.body.appendChild(outVideo);
   let _outCamStream = null;
+  let _outCamDesired = null, _outCamApplied = null;
+  let _outCamQueue = Promise.resolve();
   async function _outEnsureCam(want) {
-    if (want && !_outCamStream) {
+    const hasLiveCam = () => !!_outCamStream?.getVideoTracks().some(t => t.readyState === 'live');
+    if (want && !hasLiveCam()) {
+      _outCamStream?.getTracks().forEach(t => t.stop());
+      _outCamStream = null;
       try {
-        _outCamStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
-        outVideo.srcObject = _outCamStream;
+        const candidate = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+        if (!_outCamDesired) {
+          candidate.getTracks().forEach(t => t.stop());
+          return;
+        }
+        _outCamStream = candidate;
+        outVideo.srcObject = candidate;
         await outVideo.play().catch(() => {});
       } catch (err) {
-        flipToast?.('⚠ ' + (err?.message || 'Camera failed'));
+        if (_outCamDesired) _outReportError('CAM_FAILED', err, 'No se pudo abrir la cámara');
       }
     } else if (!want && _outCamStream) {
       _outCamStream.getTracks().forEach(t => t.stop());
@@ -21800,22 +21873,63 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
       outVideo.srcObject = null;
     }
   }
+  function _outQueueCam(want) {
+    _outCamDesired = !!want;
+    _outCamQueue = _outCamQueue.then(async () => {
+      while (_outCamApplied !== _outCamDesired) {
+        const target = _outCamDesired;
+        await _outEnsureCam(target);
+        _outCamApplied = target;
+      }
+    }).catch(err => _outReportError('CAM_QUEUE_FAILED', err, 'Falló la cola de cámara'));
+    return _outCamQueue;
+  }
+
+  let _outAudioDesired = null, _outAudioApplied = null;
+  let _outAudioQueue = Promise.resolve();
+  const _outAudioKey = (mode, deviceId) => (mode || 'off') + ':' + (deviceId || '');
+  async function _outStopAudio() {
+    const ctx = extAudioCtx;
+    extMicStream?.getTracks().forEach(t => t.stop());
+    extMicStream = null;
+    extAnalyser = null;
+    extInGainNode = null;
+    FlipAudioReact.attach(null);
+    if (ctx) { try { await ctx.close(); } catch (_) {} }
+    if (extAudioCtx === ctx) extAudioCtx = null;
+  }
   async function _outEnsureAudio(mode, deviceId) {
     const wantAny = mode === 'mic' || mode === 'ext';
     if (!wantAny) {
-      if (extAudioCtx || extMicStream) { try { await extAudioCtx?.close(); } catch (_) {} extMicStream?.getTracks().forEach(t => t.stop()); extMicStream = null; extAnalyser = null; }
+      await _outStopAudio();
       return;
     }
     try {
       await _buildExtAudioChain(deviceId || undefined);
+      if (_outAudioDesired !== _outAudioKey(mode, deviceId)) return;
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const list = devices.filter(d => d.kind === 'audioinput').map(d => ({ deviceId: d.deviceId, label: d.label || 'mic' }));
         chan?.postMessage({ type: 'devices', list });
       } catch (_) {}
     } catch (err) {
-      flipToast?.('⚠ ' + (err?.message || 'Audio failed'));
+      await _outStopAudio();
+      if (_outAudioDesired === _outAudioKey(mode, deviceId)) _outReportError('AUDIO_FAILED', err, 'No se pudo abrir el audio');
     }
+  }
+  function _outQueueAudio(mode, deviceId) {
+    _outAudioDesired = _outAudioKey(mode, deviceId);
+    _outAudioQueue = _outAudioQueue.then(async () => {
+      while (_outAudioApplied !== _outAudioDesired) {
+        const target = _outAudioDesired;
+        const splitAt = target.indexOf(':');
+        const targetMode = target.slice(0, splitAt);
+        const targetDevice = target.slice(splitAt + 1) || null;
+        await _outEnsureAudio(targetMode, targetDevice);
+        _outAudioApplied = target;
+      }
+    }).catch(err => _outReportError('AUDIO_QUEUE_FAILED', err, 'Falló la cola de audio'));
+    return _outAudioQueue;
   }
 
   let _outSrcCanvas = null;
@@ -21865,8 +21979,20 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
   }
   requestAnimationFrame(_outLoop);
 
+  let _outRecorder = null, _outChunks = [], _outMime = '', _outRecTimer = null, _outRecJob = null, _outRecStartedAt = 0;
+  const _outIsRecording = () => !!(_outRecorder && _outRecorder.state !== 'inactive');
+  function _outSendStatus() {
+    chan?.postMessage({
+      type: 'status',
+      fps: _outFps,
+      recording: _outIsRecording(),
+      workRes: _outWorkRes,
+      recElapsed: _outIsRecording() && _outRecStartedAt ? Math.floor((performance.now() - _outRecStartedAt) / 1000) : 0,
+    });
+  }
+
   // ── status heartbeat ───────────────────────────────────────────────
-  setInterval(() => { chan?.postMessage({ type: 'status', fps: _outFps, recording: !!_outRecorder }); }, 1000);
+  setInterval(_outSendStatus, 1000);
 
   // ── ready handshake — repeats every 2s until first state arrives ────
   function _outAnnounceReady() {
@@ -21878,60 +22004,123 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
 
   // ── capture: photo ───────────────────────────────────────────────────
   async function _outPhoto() {
-    const blob = await _canvasToJpeg(canvas);
-    await saveBlob(blob, _flipName('stage', 'jpg'));
-    chan?.postMessage({ type: 'saved', name: 'photo' });
+    try {
+      const blob = await _canvasToJpeg(canvas);
+      await saveBlob(blob, _flipName('stage', 'jpg'));
+      chan?.postMessage({ type: 'saved', name: 'photo' });
+    } catch (err) {
+      _outReportError('PHOTO_FAILED', err, 'No se pudo guardar la foto');
+    }
   }
   // ── capture: recording (≤120s) ────────────────────────────────────────
-  let _outRecorder = null, _outChunks = [], _outMime = '', _outRecTimer = null;
-  function _outStartRec() {
-    if (_outRecorder && _outRecorder.state !== 'inactive') return;
-    _outChunks = [];
-    const stream = canvas.captureStream(30);
-    const { recorder, mime } = _createFlipRecorder(stream, 6_000_000);
-    _outRecorder = recorder; _outMime = mime;
-    recorder.ondataavailable = e => { if (e.data && e.data.size) _outChunks.push(e.data); };
-    recorder.onstop = async () => {
-      _outMime = _resolveRecordedMime(_outMime, _outChunks);
-      const blob = new Blob(_outChunks, { type: _outMime });
-      await saveBlob(blob, _flipName('stage', _videoExtFromMime(_outMime)));
-      chan?.postMessage({ type: 'saved', name: 'recording' });
-      _outRecorder = null;
-      clearTimeout(_outRecTimer);
+  function _outCreateRecordingJob() {
+    if (typeof canvas.captureStream !== 'function') throw new Error('captureStream no disponible');
+    const canvasStream = canvas.captureStream(30);
+    const tracks = [...canvasStream.getVideoTracks()];
+    let audioDest = null, audioNode = null;
+    if (state.source.audioMode !== 'off' && extAudioCtx && extAudioCtx.state !== 'closed' && extInGainNode) {
+      audioDest = extAudioCtx.createMediaStreamDestination();
+      audioNode = extInGainNode;
+      audioNode.connect(audioDest);
+      tracks.push(...audioDest.stream.getAudioTracks());
+    }
+    const stream = new MediaStream(tracks);
+    let cleaned = false;
+    return {
+      stream,
+      cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        try { if (audioDest && audioNode) audioNode.disconnect(audioDest); } catch (_) {}
+        stream.getTracks().forEach(t => t.stop());
+        canvasStream.getTracks().forEach(t => { if (t.readyState !== 'ended') t.stop(); });
+      },
     };
-    recorder.start(250);
-    _outRecTimer = setTimeout(() => _outStopRec(), 120_000);
+  }
+  function _outStartRec() {
+    if (_outRecorder) return;
+    _outChunks = [];
+    let releaseOutFinalize = null;
+    try {
+      _outRecJob = _outCreateRecordingJob();
+      const { recorder, mime } = _createFlipRecorder(_outRecJob.stream, 6_000_000);
+      _outRecorder = recorder; _outMime = mime;
+      releaseOutFinalize = _bindRecorderFinalize(recorder, {
+        addChunk: chunk => _outChunks.push(chunk),
+        onFinalize: async () => {
+          releaseOutFinalize?.();
+          const job = _outRecJob;
+          _outRecJob = null;
+          job?.cleanup();
+          clearTimeout(_outRecTimer);
+          _outRecTimer = null;
+          _outRecorder = null;
+          _outRecStartedAt = 0;
+          _outSendStatus();
+          if (!_outChunks.length) { _outReportError('REC_EMPTY', null, 'La grabación no produjo datos'); return; }
+          _outMime = _resolveRecordedMime(_outMime, _outChunks);
+          const blob = new Blob(_outChunks, { type: _outMime });
+          try {
+            await saveBlob(blob, _flipName('stage', _videoExtFromMime(_outMime)));
+            chan?.postMessage({ type: 'saved', name: 'recording' });
+          } catch (err) {
+            _outReportError('REC_SAVE_FAILED', err, 'No se pudo guardar la grabación');
+          }
+        },
+      });
+      recorder.start(250);
+      _outRecStartedAt = performance.now();
+      _outRecTimer = setTimeout(_outStopRec, 120_000);
+      _outSendStatus();
+    } catch (err) {
+      releaseOutFinalize?.();
+      _outRecJob?.cleanup();
+      _outRecJob = null;
+      if (_outRecorder) _flipTrackedRecorders.delete(_outRecorder);
+      _outRecorder = null;
+      _outRecStartedAt = 0;
+      _outReportError('REC_START_FAILED', err, 'No se pudo iniciar la grabación');
+      _outSendStatus();
+    }
   }
   function _outStopRec() {
-    if (_outRecorder && _outRecorder.state !== 'inactive') _outRecorder.stop();
+    if (_outRecorder && _outRecorder.state !== 'inactive') _stopRecorderSafely(_outRecorder);
+    _outSendStatus();
   }
 
   // ── commands from CONTROL ─────────────────────────────────────────────
-  async function _outApplyState(payload) {
+  async function _outApplyState(payload, forceResources) {
     const prevCam = state.source.cam, prevAudio = state.source.audioMode, prevDevice = state.source.audioDeviceId;
     state = _stageClampState(payload);
-    if (state.source.cam !== prevCam) await _outEnsureCam(state.source.cam);
-    if (state.source.audioMode !== prevAudio || state.source.audioDeviceId !== prevDevice) {
-      await _outEnsureAudio(state.source.audioMode, state.source.audioDeviceId);
+    const jobs = [];
+    if (forceResources || state.source.cam !== prevCam) jobs.push(_outQueueCam(state.source.cam));
+    if (forceResources || state.source.audioMode !== prevAudio || state.source.audioDeviceId !== prevDevice) {
+      jobs.push(_outQueueAudio(state.source.audioMode, state.source.audioDeviceId));
     }
+    await Promise.all(jobs);
   }
   if (chan) chan.addEventListener('message', async e => {
     const msg = e.data;
     if (!msg || !msg.type) return;
     if (msg.type === 'state') {
+      const firstState = !gotFirstState;
       gotFirstState = true;
-      await _outApplyState(msg.payload);
+      await _outApplyState(msg.payload, firstState);
     } else if (msg.type === 'cmd') {
       if (msg.cmd === 'photo') _outPhoto();
       else if (msg.cmd === 'recStart') _outStartRec();
       else if (msg.cmd === 'recStop') _outStopRec();
-      else if (msg.cmd === 'fullscreen') { const rf = canvas.requestFullscreen || canvas.webkitRequestFullscreen; if (rf) { try { rf.call(canvas); } catch (_) {} } }
+      else if (msg.cmd === 'fullscreen') { fullscreenPrompt.hidden = false; fullscreenPrompt.focus(); }
       else if (msg.cmd === 'close') window.close();
     }
   });
 
   window.addEventListener('beforeunload', () => {
+    _outRecJob?.cleanup();
     _outCamStream?.getTracks().forEach(t => t.stop());
+    extMicStream?.getTracks().forEach(t => t.stop());
+    FlipAudioReact.attach(null);
+    extAudioCtx?.close().catch(() => {});
   });
 })();
 
