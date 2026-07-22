@@ -252,6 +252,25 @@ const RUNTIME_MEASURE = String.raw`
       minHeight:items.length ? Math.min(...items.map(item => item.height)) : 0,
     };
   };
+  const railState = () => Object.fromEntries(['flipSettingsTrigger','btnMicMobile','btnAudioIO'].map(id => {
+    const el = document.getElementById(id);
+    return [id, { visible:isVisible(el), rect:rectData(el) }];
+  }));
+  const railHudState = hudId => {
+    const rail = railState();
+    const hud = rectData(document.getElementById(hudId));
+    const overlapAreas = Object.fromEntries(Object.entries(rail).map(([id, control]) =>
+      [id, control.visible ? +overlapArea(control.rect, hud).toFixed(1) : 0]));
+    return { hud, overlapAreas, maxOverlap:Math.max(...Object.values(overlapAreas)) };
+  };
+  const layoutState = el => {
+    const cs = getComputedStyle(el);
+    return {
+      rect:rectData(el),
+      paddingLeft:parseFloat(cs.paddingLeft) || 0,
+      paddingRight:parseFloat(cs.paddingRight) || 0,
+    };
+  };
   const canvasSample = canvas => {
     const probe = document.createElement('canvas'); probe.width = 32; probe.height = 24;
     const ctx = probe.getContext('2d'); ctx.drawImage(canvas, 0, 0, 32, 24);
@@ -279,14 +298,26 @@ const RUNTIME_MEASURE = String.raw`
   const frameDiff = pixelDiff(sampleA, sampleB);
   const helper = {
     result:FLIP_IS_MOBILE(),
+    cssMobile:matchMedia('(max-width:768px), (max-height:500px)').matches,
     coarse:matchMedia('(pointer:coarse)').matches,
     width:innerWidth,
     height:innerHeight,
+  };
+  const camControls = {
+    aspectVisible:isVisible(document.getElementById('camAspect')),
+    fpsVisible:isVisible(document.getElementById('camFpsCtrl')),
+    aspectRect:rectData(document.getElementById('camAspect')),
+    fpsRect:rectData(document.getElementById('camFpsCtrl')),
+    aspectParent:document.getElementById('camAspect').parentElement?.id || '',
+    fpsParent:document.getElementById('camFpsCtrl').parentElement?.id || '',
   };
   const railRightOffsets = ['flipSettingsTrigger','btnMicMobile','btnAudioIO']
     .map(id => document.getElementById(id)).filter(isVisible)
     .map(el => +(innerWidth - el.getBoundingClientRect().right).toFixed(1));
   const micVisible = isVisible(document.getElementById('btnMicMobile'));
+  const tabRails = {};
+  const tabRailHud = {};
+  const safeAreaLayout = { tabBar:layoutState(document.querySelector('.tab-bar')) };
   const activationBefore = { videoStops:__t11.videoStops, videoCalls:__t11.gumCalls.video };
   document.getElementById('btnAudioIO').click();
   await sleep(50);
@@ -344,6 +375,8 @@ const RUNTIME_MEASURE = String.raw`
   overlaps.push(scanOverlaps('sono'));
 
   switchTab('wmp'); await sleep(150);
+  tabRails.wmp = railState();
+  tabRailHud.wmp = railHudState('wmpHUD');
   const wmpTargets = targetStats('.wmp-preset-btn');
   const wmpArea = rectData(document.getElementById('wmpArea'));
   const wmpHud = rectData(document.getElementById('wmpHUD'));
@@ -360,6 +393,8 @@ const RUNTIME_MEASURE = String.raw`
   overlaps.push(scanOverlaps('wmp'));
 
   switchTab('fusion'); await sleep(150);
+  tabRails.fusion = railState();
+  tabRailHud.fusion = railHudState('fusionHUD');
   const fusionArea = rectData(document.getElementById('fusionArea'));
   const fusionHud = rectData(document.getElementById('fusionHUD'));
   const fusionLayout = {
@@ -369,14 +404,26 @@ const RUNTIME_MEASURE = String.raw`
   };
   overlaps.push(scanOverlaps('fusion'));
 
-  switchTab('sflow'); await sleep(100); overlaps.push(scanOverlaps('flow'));
-  switchTab('edit'); await sleep(100); overlaps.push(scanOverlaps('edit'));
-  switchTab('stage'); await sleep(100); overlaps.push(scanOverlaps('stage'));
+  switchTab('sflow'); await sleep(100);
+  tabRails.flow = railState(); safeAreaLayout.barSflow = layoutState(document.getElementById('barSflow'));
+  tabRailHud.flow = railHudState('sflowHUD');
+  overlaps.push(scanOverlaps('flow'));
+  switchTab('edit'); await sleep(100);
+  tabRails.edit = railState(); safeAreaLayout.barEdit = layoutState(document.getElementById('barEdit'));
+  tabRailHud.edit = railHudState('editHUD');
+  overlaps.push(scanOverlaps('edit'));
+  switchTab('stage'); await sleep(100);
+  safeAreaLayout.barStage = layoutState(document.getElementById('barStage'));
+  overlaps.push(scanOverlaps('stage'));
 
   return {
     elapsedMs:+(performance.now() - started).toFixed(1),
     helper,
+    camControls,
     railRightOffsets,
+    tabRails,
+    tabRailHud,
+    safeAreaLayout,
     micVisible,
     activation,
     frameDiff,
@@ -419,8 +466,8 @@ async function newPage(browser, viewport) {
   });
   await page.send('Emulation.setTouchEmulationEnabled', { enabled:true, maxTouchPoints:5 });
   await page.send('Network.setUserAgentOverride', {
-    userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1',
-    platform:'iPhone',
+    userAgent:viewport.userAgent || 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1',
+    platform:viewport.platform || 'iPhone',
   });
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source:INIT_SCRIPT });
   await page.send('Page.navigate', { url:PAGE_URL });
@@ -452,6 +499,22 @@ async function main() {
   const fusionHudSetters = (html.match(/setProperty\('--fusion-hud-h'/g) || []).length;
   const wmpHudSetters = (html.match(/setProperty\('--wmp-hud-h'/g) || []).length;
   const safeAreaLeftRightRefs = (html.match(/safe-area-inset-(?:left|right)/g) || []).length;
+  const cssRule = selector => {
+    const needle = `${selector} {`;
+    let start = -1;
+    while ((start = html.indexOf(needle, start + 1)) >= 0) {
+      const lineStart = html.lastIndexOf('\n', start) + 1;
+      if (!html.slice(lineStart, start).trim()) break;
+    }
+    const end = html.indexOf('}', start);
+    return start >= 0 && end > start ? html.slice(start, end) : '';
+  };
+  const safeSideSelectors = ['.tab-bar','#barSflow','#barEdit','#barStage'];
+  const safeSideRules = safeSideSelectors.filter(selector => {
+    const rule = cssRule(selector);
+    return /padding-left:[^;]*safe-area-inset-left/.test(rule) &&
+      /padding-right:[^;]*safe-area-inset-right/.test(rule);
+  });
   const safeBottomBars = ['barSflow','barEdit','barStage'].filter(id => {
     const start = html.indexOf(`#${id} {`);
     const end = html.indexOf('}', start);
@@ -462,8 +525,18 @@ async function main() {
     `breakpoints legacy max/min=${legacyMaxBreakpoints}/${legacyMinBreakpoints}`);
   assert(fusionHudSetters === 1 && wmpHudSetters === 1,
     `setters HUD fusion/wmp=${fusionHudSetters}/${wmpHudSetters}`);
-  assert(safeAreaLeftRightRefs >= 2 && safeBottomBars === 3,
-    `safe areas left-right/barras=${safeAreaLeftRightRefs}/${safeBottomBars}`);
+  assert(safeSideRules.length === safeSideSelectors.length && safeBottomBars === 3,
+    `safe areas laterales=${safeSideRules.join(',')} bottom=${safeBottomBars}`);
+  const mobileHelperSource = html.match(/function FLIP_IS_MOBILE\(\)\s*{([\s\S]*?)}/)?.[1] || '';
+  assert(/innerWidth\s*<=\s*768/.test(mobileHelperSource) && /innerHeight\s*<=\s*500/.test(mobileHelperSource) &&
+    !/pointer:coarse/.test(mobileHelperSource), `helper movil=${mobileHelperSource.trim()}`);
+  const enumerateSource = html.match(/async function enumerateAudioDevices\(\)\s*{([\s\S]*?)}/)?.[1] || '';
+  assert(/if\s*\(FLIP_IS_MOBILE\(\)\)\s*return/.test(enumerateSource) && !/screen\.width/.test(enumerateSource),
+    `enumerateAudioDevices=${enumerateSource.trim()}`);
+  const hudRuleIndex = html.indexOf('body.flip-hud-tab-active #flipSettingsTrigger');
+  const hudMediaStart = html.lastIndexOf('@media', hudRuleIndex);
+  assert(hudMediaStart >= 0 && /@media\s*\(max-height:500px\)/.test(html.slice(hudMediaStart, hudRuleIndex)),
+    'flip-hud-tab-active no esta acotado a landscape bajo');
 
   const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'flip-t11-chrome-'));
   const debugPort = Number(process.env.T11_CDP_PORT) || await getFreePort();
@@ -495,9 +568,13 @@ async function main() {
 
   try {
     const cases = [
-      { name:'portrait', width:375, height:812 },
-      { name:'landscape', width:852, height:393 },
-      { name:'ipad768', width:768, height:1024 },
+      { name:'portrait', width:375, height:812, mobile:true },
+      { name:'landscape', width:852, height:393, mobile:true },
+      { name:'ipad768', width:768, height:1024, mobile:true },
+      {
+        name:'ipadAir', width:820, height:1180, mobile:false, platform:'iPad',
+        userAgent:'Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1',
+      },
     ];
     const results = {};
     for (const testCase of cases) {
@@ -505,25 +582,47 @@ async function main() {
       pages.push(page);
       const result = await evaluate(page, RUNTIME_MEASURE);
       const targetValues = Object.values(result.targets);
-      assert(result.helper.result, `${testCase.name}: FLIP_IS_MOBILE=false`);
-      assert(result.railRightOffsets.length === 3 && Math.max(...result.railRightOffsets) - Math.min(...result.railRightOffsets) <= 0.5,
-        `${testCase.name}: riel right=${JSON.stringify(result.railRightOffsets)}`);
-      assert(result.micVisible, `${testCase.name}: mic no visible`);
-      assert(result.activation.mobileUI && result.activation.extMicOnlyMode && !result.activation.extAudioMode,
-        `${testCase.name}: semantica ACTIVAR=${JSON.stringify(result.activation)}`);
-      assert(result.activation.cameraTrackState === 'live' && result.activation.videoStopsDelta === 0,
-        `${testCase.name}: camara alterada=${JSON.stringify(result.activation)}`);
-      assert(result.activation.micVisibleAfterActivation, `${testCase.name}: mic oculto tras ACTIVAR`);
+      assert(result.helper.result === testCase.mobile && result.helper.cssMobile === testCase.mobile && result.helper.coarse,
+        `${testCase.name}: coherencia helper/CSS/coarse=${JSON.stringify(result.helper)}`);
       assert(result.frameDiff.changedPixels > 0, `${testCase.name}: pixel diff=0`);
-      assert(result.dock.parent === 'camMobileUtilityDock', `${testCase.name}: dock parent=${result.dock.parent}`);
-      assert(result.dock.fpsInViewport && result.dock.zoomInViewport, `${testCase.name}: controles CAM fuera=${JSON.stringify(result.dock)}`);
-      assert(targetValues.every(value => value.count > 0 && value.minWidth >= 40 && value.minHeight >= 40),
-        `${testCase.name}: targets=${JSON.stringify(result.targets)} dock=${JSON.stringify(result.dock)}`);
-      assert(Math.abs(result.huds.fusion.hudHeight - result.huds.fusion.cssVar) <= 1 && result.huds.fusion.gap >= -0.5,
-        `${testCase.name}: FUSION HUD=${JSON.stringify(result.huds.fusion)}`);
-      assert(Math.abs(result.huds.wmp.hudHeight - result.huds.wmp.cssVar) <= 1 && result.huds.wmp.gap >= -0.5 && result.huds.wmp.fileGap >= -0.5,
-        `${testCase.name}: WMP HUD=${JSON.stringify(result.huds.wmp)}`);
-      assert(result.overlaps.length === 0, `${testCase.name}: overlaps=${JSON.stringify(result.overlaps)} dock=${JSON.stringify(result.dock)}`);
+      const expectedPaddings = { tabBar:0, barSflow:8, barEdit:20, barStage:testCase.mobile ? 0 : 20 };
+      Object.entries(expectedPaddings).forEach(([key, expected]) => {
+        const layout = result.safeAreaLayout[key];
+        assert(layout.rect.left === 0 && layout.rect.right === testCase.width &&
+          layout.paddingLeft === expected && layout.paddingRight === expected,
+        `${testCase.name}: layout env(0) ${key}=${JSON.stringify(layout)}`);
+      });
+      if (testCase.mobile) {
+        assert(result.railRightOffsets.length === 3 && Math.max(...result.railRightOffsets) - Math.min(...result.railRightOffsets) <= 0.5,
+          `${testCase.name}: riel right=${JSON.stringify(result.railRightOffsets)}`);
+        assert(result.micVisible, `${testCase.name}: mic no visible`);
+        assert(result.activation.mobileUI && result.activation.extMicOnlyMode && !result.activation.extAudioMode,
+          `${testCase.name}: semantica ACTIVAR=${JSON.stringify(result.activation)}`);
+        assert(result.activation.cameraTrackState === 'live' && result.activation.videoStopsDelta === 0,
+          `${testCase.name}: camara alterada=${JSON.stringify(result.activation)}`);
+        assert(result.activation.micVisibleAfterActivation, `${testCase.name}: mic oculto tras ACTIVAR`);
+        assert(result.dock.parent === 'camMobileUtilityDock', `${testCase.name}: dock parent=${result.dock.parent}`);
+        assert(result.dock.fpsInViewport && result.dock.zoomInViewport, `${testCase.name}: controles CAM fuera=${JSON.stringify(result.dock)}`);
+        assert(targetValues.every(value => value.count > 0 && value.minWidth >= 40 && value.minHeight >= 40),
+          `${testCase.name}: targets=${JSON.stringify(result.targets)} dock=${JSON.stringify(result.dock)}`);
+        assert(Math.abs(result.huds.fusion.hudHeight - result.huds.fusion.cssVar) <= 1 && result.huds.fusion.gap >= -0.5,
+          `${testCase.name}: FUSION HUD=${JSON.stringify(result.huds.fusion)}`);
+        assert(Math.abs(result.huds.wmp.hudHeight - result.huds.wmp.cssVar) <= 1 && result.huds.wmp.gap >= -0.5 && result.huds.wmp.fileGap >= -0.5,
+          `${testCase.name}: WMP HUD=${JSON.stringify(result.huds.wmp)}`);
+        const railShouldBeVisible = testCase.height > 500;
+        assert(Object.values(result.tabRails).every(tab => Object.values(tab).every(control => control.visible === railShouldBeVisible)),
+          `${testCase.name}: riel por tab=${JSON.stringify(result.tabRails)}`);
+        assert(Object.values(result.tabRailHud).every(tab => tab.maxOverlap === 0),
+          `${testCase.name}: overlap riel/HUD=${JSON.stringify(result.tabRailHud)}`);
+        assert(result.overlaps.length === 0, `${testCase.name}: overlaps=${JSON.stringify(result.overlaps)} dock=${JSON.stringify(result.dock)}`);
+      } else {
+        assert(result.camControls.aspectVisible && result.camControls.fpsVisible &&
+          result.camControls.aspectParent !== 'camMobileUtilityDock' && result.camControls.fpsParent !== 'camMobileUtilityDock',
+        `${testCase.name}: controles CAM desktop=${JSON.stringify(result.camControls)}`);
+        assert(!result.micVisible && !result.activation.mobileUI && !result.activation.extMicOnlyMode && result.activation.extAudioMode &&
+          !result.activation.micVisibleAfterActivation && result.activation.cameraTrackState === 'none' && result.activation.videoStopsDelta === 1,
+        `${testCase.name}: semantica desktop=${JSON.stringify(result.activation)} mic=${result.micVisible}`);
+      }
       const runtimeExceptions = page.events.filter(event => event.method === 'Runtime.exceptionThrown');
       assert(runtimeExceptions.length === 0, `${testCase.name}: excepciones runtime=${runtimeExceptions.length}`);
       results[testCase.name] = { ...result, runtimeExceptions:runtimeExceptions.length };
@@ -544,6 +643,7 @@ async function main() {
         fusionHudSetters,
         wmpHudSetters,
         safeAreaLeftRightRefs,
+        safeSideRules,
         safeBottomBars,
       },
       ...results,

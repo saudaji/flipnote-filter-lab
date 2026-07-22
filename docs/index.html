@@ -685,6 +685,8 @@
       position:fixed; top:0; left:0; right:0; z-index:20;
       height:40px; display:flex;
       border-bottom:2px solid var(--dark); background:var(--ink);
+      padding-left:env(safe-area-inset-left, 0px);
+      padding-right:env(safe-area-inset-right, 0px);
     }
     .tab {
       flex:1; height:100%; background:none; border:none;
@@ -1942,6 +1944,8 @@
       display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
       background:var(--ink); border-top:2px solid var(--dark);
       align-items:center; justify-content:space-around; padding:0 8px; z-index:10;
+      padding-left:calc(8px + env(safe-area-inset-left, 0px));
+      padding-right:calc(8px + env(safe-area-inset-right, 0px));
       padding-bottom:env(safe-area-inset-bottom);
       gap:6px;
     }
@@ -2058,6 +2062,8 @@
       display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
       background:var(--ink); border-top:2px solid var(--dark);
       align-items:center; justify-content:space-around; padding:0 20px; z-index:10;
+      padding-left:calc(20px + env(safe-area-inset-left, 0px));
+      padding-right:calc(20px + env(safe-area-inset-right, 0px));
       padding-bottom:env(safe-area-inset-bottom);
     }
     #barEdit.visible { display:flex; }
@@ -2089,6 +2095,8 @@
       display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
       background:var(--ink); border-top:2px solid var(--dark);
       align-items:center; justify-content:space-around; padding:0 20px;
+      padding-left:calc(20px + env(safe-area-inset-left, 0px));
+      padding-right:calc(20px + env(safe-area-inset-right, 0px));
       padding-bottom:env(safe-area-inset-bottom); z-index:10;
     }
     #barStage.visible { display:flex; }
@@ -2099,7 +2107,10 @@
     body.stage-mode #audioIOPanel,
     body.stage-mode #btnExtCapture { display:none !important; }
     @media (max-width:768px), (max-height:500px) {
-      #barStage { padding-left:0; padding-right:0; }
+      #barStage {
+        padding-left:env(safe-area-inset-left, 0px);
+        padding-right:env(safe-area-inset-right, 0px);
+      }
       #barStage .btn { flex:1; min-width:0; padding:8px 1px; }
       #barStage .btn-label { font-size:8px; letter-spacing:0; }
     }
@@ -2191,7 +2202,11 @@
       body.cam-family-open #btnMicMobile,
       body.cam-family-open #btnAudioIO,
       body.cam-family-open #btnFlip,
-      body.cam-ui-active.cam-edit-open #btnFlip,
+      body.cam-ui-active.cam-edit-open #btnFlip {
+        opacity:0 !important; pointer-events:none !important;
+      }
+    }
+    @media (max-height:500px) {
       body.flip-hud-tab-active #flipSettingsTrigger,
       body.flip-hud-tab-active #btnMicMobile,
       body.flip-hud-tab-active #btnAudioIO {
@@ -4243,7 +4258,7 @@ function _asciiInvertMap(inkCss, paperCss) {
 }
 const EARLY_IS_ANDROID = /Android/i.test(navigator.userAgent);
 function FLIP_IS_MOBILE() {
-  return window.matchMedia('(pointer:coarse)').matches || window.innerWidth <= 768 || window.innerHeight <= 500;
+  return window.innerWidth <= 768 || window.innerHeight <= 500;
 }
 const EARLY_IS_MOBILE = FLIP_IS_MOBILE();
 const _flipUrlParams = new URLSearchParams(window.location.search);
@@ -18560,7 +18575,7 @@ btnWmpRec.addEventListener('click', async () => {
 // ════════════════════════════════════════════════════════════════════
 
 async function enumerateAudioDevices() {
-  if (screen.width <= 768) return;
+  if (FLIP_IS_MOBILE()) return;
   try {
     await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
   } catch(_) {}
