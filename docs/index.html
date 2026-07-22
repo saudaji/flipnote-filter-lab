@@ -12033,6 +12033,9 @@ let extAudioMode = false;
 // Distinto de extAudioMode (desktop, reemplaza la cámara / "audio genera imagen").
 let extMicOnlyMode = false;
 let extInGainNode = null;
+let _extChainOp = Promise.resolve();
+let _extChainIntent = 0;
+let _extChainDesiredMode = 'off';
 let extInGainVal = (function(){
   const saved = parseFloat(localStorage.getItem('flip_ext_gain'));
   return (isFinite(saved) && saved > 0) ? saved : 3;
@@ -13716,29 +13719,21 @@ class FlipAudioEngine {
     this.isInitialized = false;
     this.state = 'IDLE';
     this._bitCrusherReady = false;
-  }
-  _pickExistingContext() {
-    const list = [
-      window.flipAudioContext,
-      typeof extAudioCtx !== 'undefined' ? extAudioCtx : null,
-      typeof sonoAudioCtx !== 'undefined' ? sonoAudioCtx : null,
-      typeof wmpAudioCtx !== 'undefined' ? wmpAudioCtx : null,
-    ];
-    return list.find(ctx => ctx && ctx.state && ctx.state !== 'closed') || null;
+    this._contextStateHandler = null;
   }
   async _ensureContext(preferLoFi = false) {
     if (this.ctx && this.ctx.state !== 'closed') return this.ctx;
-    const existing = this._pickExistingContext();
-    if (existing) {
-      this.ctx = existing;
-      this.ownsContext = false;
-      return this.ctx;
-    }
+    if (this.ctx) await this.destroy();
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) throw new Error('Web Audio unsupported');
     this.ctx = preferLoFi ? new AC({ sampleRate: 22050 }) : new AC();
     this.ownsContext = true;
     window.flipAudioContext = this.ctx;
+    const ownCtx = this.ctx;
+    this._contextStateHandler = () => {
+      if (this.ctx === ownCtx && ownCtx.state === 'closed') this.destroy().catch(() => {});
+    };
+    ownCtx.addEventListener('statechange', this._contextStateHandler);
     return this.ctx;
   }
   async _ensureBitCrusher() {
@@ -14070,7 +14065,9 @@ class FlipAudioEngine {
       this.stopAfterRecording();
       return false;
     }
+    const camWasActive = !!(stream && stream.getVideoTracks().some(t => t.readyState === 'live'));
     const ready = await this.primeFromGesture(settings);
+    if (camWasActive) await _micReacquireCameraIfDead(() => camWasActive);
     if (!ready) return false;
     try {
       if (this.ctx && this.ctx.state === 'suspended') await this.ctx.resume();
@@ -14089,15 +14086,33 @@ class FlipAudioEngine {
   }
   async destroy() {
     Object.values(this.irTimers).forEach(id => clearTimeout(id));
+    this.irTimers = {};
+    try { this.effects.lofi?.noiseSource?.stop(); } catch (_) {}
     if (this.micStream) {
       try { this.micStream.getTracks().forEach(t => t.stop()); } catch (_) {}
       this.micStream = null;
     }
-    if (this.ownsContext && this.ctx && this.ctx.state !== 'closed') {
-      await this.ctx.close().catch(() => {});
-    }
-    if (window.flipAudioContext === this.ctx) window.flipAudioContext = null;
+    try { this.sourceNode?.disconnect(); } catch (_) {}
+    const closingCtx = this.ctx;
+    if (closingCtx && this._contextStateHandler) closingCtx.removeEventListener('statechange', this._contextStateHandler);
+    if (window.flipAudioContext === closingCtx) window.flipAudioContext = null;
+    this.ctx = null;
+    this.ownsContext = false;
+    this.sourceNode = null;
+    this.inputGain = null;
+    this.cleanGain = null;
+    this.masterGain = null;
+    this.limiter = null;
+    this.recordingDest = null;
+    this.monitorGain = null;
+    this.monitorConnected = false;
+    this.effects = {};
+    this.isInitialized = false;
+    this._bitCrusherReady = false;
+    this._contextStateHandler = null;
     this.state = 'IDLE';
+    if (closingCtx && closingCtx.state !== 'closed') await closingCtx.close().catch(() => {});
+    _updateFlipAudioStatus();
   }
 }
 const flipAudioEngine = new FlipAudioEngine();
@@ -14480,6 +14495,7 @@ function _renderFlipSettingsSections() {
       flipAudioSettings.audioMode = opt.id;
       let keepMode = true;
       if (opt.id !== 'off') keepMode = await flipAudioEngine.primeFromGesture(flipAudioSettings);
+      else await flipAudioEngine.destroy();
       if (!keepMode) flipAudioSettings.audioMode = 'off';
       saveFlipAudioSettings();
       _syncFlipSettingsUI();
@@ -18297,153 +18313,233 @@ function _extStartLevelMeter() {
 // analyser → FlipAudioReact.attach(). Usada por startExtAudio() (desktop, reemplaza cámara) y
 // startMicOnly() (móvil, mic + cámara simultáneos). No toca extAudioMode/extMicOnlyMode ni la cámara —
 // eso lo decide cada caller.
-async function _buildExtAudioChain(deviceId) {
-  if (extMicStream) { extMicStream.getTracks().forEach(t => t.stop()); extMicStream = null; }
-  if (extAudioCtx)  { await extAudioCtx.close().catch(()=>{}); extAudioCtx = null; }
+function _enqueueExtChainTask(task) {
+  const result = _extChainOp.catch(() => {}).then(task);
+  _extChainOp = result.catch(() => {});
+  return result;
+}
+
+function _queueExtChainIntent(mode, task) {
+  const intent = ++_extChainIntent;
+  _extChainDesiredMode = mode;
+  return _enqueueExtChainTask(() => task(intent, () => (
+    intent === _extChainIntent && _extChainDesiredMode === mode
+  )));
+}
+
+async function _releaseExtAudioResources(audioStream, audioCtx) {
+  if (audioStream) {
+    try { audioStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+  }
+  if (audioCtx && audioCtx.state !== 'closed') await audioCtx.close().catch(() => {});
+}
+
+async function _clearExtAudioChain() {
+  const oldStream = extMicStream;
+  const oldCtx = extAudioCtx;
+  _detachMicDeathWatch();
+  extMicStream = null;
+  extAudioCtx = null;
   extAnalyser = null;
+  extInGainNode = null;
+  FlipAudioReact.attach(null);
+  await _releaseExtAudioResources(oldStream, oldCtx);
+}
+
+async function _buildExtAudioChain(deviceId, isCurrent = () => true) {
+  await _clearExtAudioChain();
+  if (!isCurrent()) return false;
 
   // Build audio constraints — try exact deviceId first, fall back to any device
   const audioConstraints = deviceId
     ? { deviceId: { exact: deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false }
     : { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
 
+  let nextStream = null;
+  let nextCtx = null;
+  const abandon = async () => {
+    await _releaseExtAudioResources(nextStream, nextCtx);
+    nextStream = null;
+    nextCtx = null;
+  };
   try {
-    extMicStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+    nextStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
   } catch(e1) {
+    if (!isCurrent()) return false;
     if (deviceId) {
       // Fallback: try without exact constraint
       try {
-        extMicStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId, echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
+        nextStream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId, echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false });
       } catch(e2) {
+        if (!isCurrent()) return false;
         throw new Error('No se pudo abrir el dispositivo: ' + (e2.message || e2.name));
       }
     } else if (e1.name === 'OverconstrainedError' || e1.name === 'NotReadableError' || e1.name === 'ConstraintNotSatisfiedError') {
       // Some iOS versions reject echoCancellation:false/noiseSuppression:false/autoGainControl:false —
       // retry with a plain {audio:true} request before giving up.
       try {
-        extMicStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        nextStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       } catch(e1b) {
+        if (!isCurrent()) return false;
         throw new Error('Permiso de audio denegado: ' + (e1b.message || e1b.name));
       }
     } else {
       throw new Error('Permiso de audio denegado: ' + (e1.message || e1.name));
     }
   }
+  if (!isCurrent()) { await abandon(); return false; }
 
-  extAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  // Resume immediately — context can start suspended (iOS requires this inside the tap gesture)
-  if (extAudioCtx.state === 'suspended') await extAudioCtx.resume();
+  try {
+    nextCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Resume immediately — context can start suspended (iOS requires this inside the tap gesture)
+    if (nextCtx.state === 'suspended') await nextCtx.resume();
+    if (!isCurrent()) { await abandon(); return false; }
 
-  extAnalyser = extAudioCtx.createAnalyser();
-  extAnalyser.fftSize = 2048;
-  extAnalyser.smoothingTimeConstant = 0.80;
+    const nextAnalyser = nextCtx.createAnalyser();
+    nextAnalyser.fftSize = 2048;
+    nextAnalyser.smoothingTimeConstant = 0.80;
 
-  const src = extAudioCtx.createMediaStreamSource(extMicStream);
-  extInGainNode = extAudioCtx.createGain();
-  extInGainNode.gain.value = extInGainVal;
-  src.connect(extInGainNode);
-  extInGainNode.connect(extAnalyser);
-  FlipAudioReact.attach(extAnalyser);
+    const src = nextCtx.createMediaStreamSource(nextStream);
+    const nextGain = nextCtx.createGain();
+    nextGain.gain.value = extInGainVal;
+    src.connect(nextGain);
+    nextGain.connect(nextAnalyser);
+    if (!isCurrent()) { await abandon(); return false; }
+    extMicStream = nextStream;
+    extAudioCtx = nextCtx;
+    extAnalyser = nextAnalyser;
+    extInGainNode = nextGain;
+    FlipAudioReact.attach(nextAnalyser);
+  } catch (err) {
+    await abandon();
+    if (!isCurrent()) return false;
+    throw err;
+  }
+  return true;
 }
 
 async function startExtAudio(deviceId) {
   _extShowErr('');
-  await _buildExtAudioChain(deviceId);
-
-  extAudioMode = true;
-  document.body.classList.add('ext-audio');
-  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; vid.srcObject = null; }
-  _clearCamZoomSupport();
-  _syncCamZoomUI();
-  cameraRunning = false;
-  display.style.display = 'none';
-  document.getElementById('btnExtAudioToggle').textContent = '■ DESACTIVAR';
-  document.getElementById('btnExtAudioToggle').classList.add('active');
-  _extStartLevelMeter();
-  const mw = document.getElementById('monitorWrap');
-  if (mw) mw.style.display = 'block';
-  // Kick-start the visual loop for whichever tab is currently active
-  if (activeTab === 'cam') {
-    display.style.display = 'block';
-    cameraRunning = true;
-    if (!_camLoopAlive) requestAnimationFrame(cameraLoop);
-  } else if (activeTab === 'ascii') {
-    asciiRunning = true;
-    if (!_asciiLoopAlive) requestAnimationFrame(asciiLoop);
-  } else if (activeTab === 'sono') {
-    document.getElementById('sonoPerm').classList.remove('visible');
-    sonoRunning = true;
-    if (!_sonoLoopAlive) { sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
-  } else if (activeTab === 'wmp') {
-    document.getElementById('wmpPerm').classList.remove('visible');
-    if (!wmpRunning) { wmpRunning = true; requestAnimationFrame(wmpLoop); }
-  } else if (activeTab === 'scrash') {
-    if (!scrashRunning) { scrashRunning = true; _scrStartT = null; }
-    if (!_scrashLoopAlive && !_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
-  } else if (activeTab === 'fusion') {
-    fusionRunning = true;
-    if (!_fusionLoopAlive) requestAnimationFrame(_fusionLoop);
-  } else if (activeTab === 'sflow') {
-    if (typeof window._sflowStartExtAudio === 'function') window._sflowStartExtAudio();
-  }
-  console.log('[ExtAudio] started. Stream tracks:', extMicStream.getTracks().map(t => t.label));
+  return _queueExtChainIntent('ext', async (intent, isCurrent) => {
+    try {
+      const built = await _buildExtAudioChain(deviceId, isCurrent);
+      if (!built || !isCurrent()) return false;
+      extMicOnlyMode = false;
+      extAudioMode = true;
+      document.body.classList.add('ext-audio');
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; vid.srcObject = null; }
+      _clearCamZoomSupport();
+      _syncCamZoomUI();
+      cameraRunning = false;
+      display.style.display = 'none';
+      document.getElementById('btnExtAudioToggle').textContent = '■ DESACTIVAR';
+      document.getElementById('btnExtAudioToggle').classList.add('active');
+      _extStartLevelMeter();
+      const mw = document.getElementById('monitorWrap');
+      if (mw) mw.style.display = 'block';
+      // Kick-start the visual loop for whichever tab is currently active
+      if (activeTab === 'cam') {
+        display.style.display = 'block';
+        cameraRunning = true;
+        if (!_camLoopAlive) requestAnimationFrame(cameraLoop);
+      } else if (activeTab === 'ascii') {
+        asciiRunning = true;
+        if (!_asciiLoopAlive) requestAnimationFrame(asciiLoop);
+      } else if (activeTab === 'sono') {
+        document.getElementById('sonoPerm').classList.remove('visible');
+        sonoRunning = true;
+        if (!_sonoLoopAlive) { sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
+      } else if (activeTab === 'wmp') {
+        document.getElementById('wmpPerm').classList.remove('visible');
+        if (!wmpRunning) { wmpRunning = true; requestAnimationFrame(wmpLoop); }
+      } else if (activeTab === 'scrash') {
+        if (!scrashRunning) { scrashRunning = true; _scrStartT = null; }
+        if (!_scrashLoopAlive && !_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
+      } else if (activeTab === 'fusion') {
+        fusionRunning = true;
+        if (!_fusionLoopAlive) requestAnimationFrame(_fusionLoop);
+      } else if (activeTab === 'sflow') {
+        if (typeof window._sflowStartExtAudio === 'function') window._sflowStartExtAudio();
+      }
+      console.log('[ExtAudio] started. Stream tracks:', extMicStream.getTracks().map(t => t.label));
+      return true;
+    } catch (err) {
+      if (intent === _extChainIntent) {
+        _extChainDesiredMode = 'off';
+        extAudioMode = false;
+        document.body.classList.remove('ext-audio');
+      }
+      throw err;
+    }
+  });
 }
 
 async function stopExtAudio() {
-  if (_extLevelTimer) { clearInterval(_extLevelTimer); _extLevelTimer = null; }
-  const wrap = document.getElementById('extLevelWrap');
-  if (wrap) wrap.style.display = 'none';
-  const bar = document.getElementById('extLevelBar');
-  if (bar) bar.style.width = '0%';
-  _extShowErr('');
-  _disableMonitor();
-  const mw2 = document.getElementById('monitorWrap');
-  if (mw2) mw2.style.display = 'none';
-  if (extMicStream) { extMicStream.getTracks().forEach(t => t.stop()); extMicStream = null; }
-  if (extAudioCtx)  { await extAudioCtx.close().catch(()=>{}); extAudioCtx = null; }
-  extAnalyser = null;
-  FlipAudioReact.attach(null);
-  extAudioMode = false;
-  // Stop visual loops that were running only because of ext audio
-  cameraRunning = false;
-  asciiRunning  = false;
-  sonoRunning   = false;
-  wmpRunning    = false;
-  fusionRunning = false;
-  document.body.classList.remove('ext-audio');
-  document.getElementById('btnExtAudioToggle').textContent = '▶ ACTIVAR AUDIO EXTERNO';
-  document.getElementById('btnExtAudioToggle').classList.remove('active');
-  if (activeTab === 'cam') {
-    await startCamera(facingMode);
-    display.style.display = 'block';
-    cameraRunning = true;
-    if (!_camLoopAlive) requestAnimationFrame(cameraLoop);
-  } else if (activeTab === 'ascii') {
-    await startCamera(facingMode);
-    asciiRunning = true;
-    if (!_asciiLoopAlive) requestAnimationFrame(asciiLoop);
-  } else if (activeTab === 'scrash') {
-    await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
-  } else if (activeTab === 'fusion') {
-    await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
-    fusionRunning = true;
-    if (!_fusionLoopAlive) requestAnimationFrame(_fusionLoop);
-  } else if (activeTab === 'sflow') {
-    // Don't force camera — FLOW starts via its own CAM button as usual.
-    if (typeof window._sflowStop === 'function') window._sflowStop();
-  }
+  return _queueExtChainIntent('off', async (_intent, isCurrent) => {
+    if (!isCurrent()) return false;
+    extAudioMode = false;
+    extMicOnlyMode = false;
+    if (_extLevelTimer) { clearInterval(_extLevelTimer); _extLevelTimer = null; }
+    const wrap = document.getElementById('extLevelWrap');
+    if (wrap) wrap.style.display = 'none';
+    const bar = document.getElementById('extLevelBar');
+    if (bar) bar.style.width = '0%';
+    _extShowErr('');
+    _disableMonitor();
+    const mw2 = document.getElementById('monitorWrap');
+    if (mw2) mw2.style.display = 'none';
+    await _clearExtAudioChain();
+    if (!isCurrent()) return false;
+    // Stop visual loops that were running only because of ext audio
+    cameraRunning = false;
+    asciiRunning  = false;
+    sonoRunning   = false;
+    wmpRunning    = false;
+    fusionRunning = false;
+    document.body.classList.remove('ext-audio');
+    document.getElementById('btnExtAudioToggle').textContent = '▶ ACTIVAR AUDIO EXTERNO';
+    document.getElementById('btnExtAudioToggle').classList.remove('active');
+    if (activeTab === 'cam') {
+      await startCamera(facingMode);
+      if (!isCurrent()) return false;
+      display.style.display = 'block';
+      cameraRunning = true;
+      if (!_camLoopAlive) requestAnimationFrame(cameraLoop);
+    } else if (activeTab === 'ascii') {
+      await startCamera(facingMode);
+      if (!isCurrent()) return false;
+      asciiRunning = true;
+      if (!_asciiLoopAlive) requestAnimationFrame(asciiLoop);
+    } else if (activeTab === 'scrash') {
+      await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+      if (!isCurrent()) return false;
+    } else if (activeTab === 'fusion') {
+      await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+      if (!isCurrent()) return false;
+      fusionRunning = true;
+      if (!_fusionLoopAlive) requestAnimationFrame(_fusionLoop);
+    } else if (activeTab === 'sflow') {
+      // Don't force camera — FLOW starts via its own CAM button as usual.
+      if (typeof window._sflowStop === 'function') window._sflowStop();
+    }
+    return true;
+  });
 }
 
 // F4 — MIC móvil: analyser vivo compartido por FUSION/GLITCH/SONO/WMP como MODULADOR,
 // pero SIN apagar la cámara ni entrar en extAudioMode (a diferencia de startExtAudio, que en
 // desktop reemplaza la cámara). Debe llamarse dentro del gesto del tap (iOS exige resume() ahí).
 let _micDeathHandler = null; // cleanup ref for the current mic track's 'ended'/'mute' listener
+let _micDeathTrack = null;
+let _micRebuildHistory = [];
 
-async function _micReacquireCameraIfDead() {
+async function _micReacquireCameraIfDead(isCurrent = () => (
+  extMicOnlyMode && _extChainDesiredMode === 'mic'
+)) {
   // iOS Safari frequently ends/mutes the previous video track when a second
   // getUserMedia(audio) call lands — give the video element a beat, then check.
   await new Promise(res => setTimeout(res, 300));
-  if (!extMicOnlyMode) return;
+  if (!isCurrent()) return false;
   const camDead = !!stream && (
     stream.getVideoTracks().every(t => t.readyState === 'ended' || t.muted) ||
     vid.videoWidth === 0
@@ -18451,33 +18547,82 @@ async function _micReacquireCameraIfDead() {
   if (camDead) {
     try {
       await startCamera(facingMode);
+      if (!isCurrent()) return false;
       console.log('[MicOnly] camera re-acquired after iOS killed it.');
     } catch (err) {
       console.warn('[MicOnly] camera re-acquire failed:', err);
     }
   }
   // FLOW keeps its own independent camera stream — ask it to check/restart itself too.
-  if (typeof window._sflowRestartCam === 'function') window._sflowRestartCam();
+  if (typeof window._sflowRestartCam === 'function') {
+    await Promise.resolve(window._sflowRestartCam());
+    if (!isCurrent()) return false;
+  }
+  return true;
+}
+
+function _detachMicDeathWatch() {
+  if (_micDeathTrack && _micDeathHandler) {
+    _micDeathTrack.removeEventListener('ended', _micDeathHandler);
+    _micDeathTrack.removeEventListener('mute', _micDeathHandler);
+  }
+  _micDeathTrack = null;
+  _micDeathHandler = null;
+}
+
+async function _stopMicOnlyNow() {
+  extMicOnlyMode = false;
+  extAudioMode = false;
+  document.body.classList.remove('ext-audio');
+  _stopMicLevelFeedback();
+  await _clearExtAudioChain();
 }
 
 function _micWatchTrackDeath(track) {
-  const onDeath = async () => {
-    if (!extMicOnlyMode) return;
-    track.removeEventListener('ended', onDeath);
-    track.removeEventListener('mute', onDeath);
-    try {
-      await _buildExtAudioChain();
-      _micWatchTrackDeath(extMicStream.getAudioTracks()[0]);
-      console.log('[MicOnly] audio chain rebuilt after track death.');
-    } catch (err) {
-      console.warn('[MicOnly] audio rebuild failed, stopping mic mode:', err);
-      await stopMicOnly();
-      const btn = document.getElementById('btnMicMobile');
-      if (btn) { btn.classList.remove('active'); btn.textContent = '🎙'; }
-      flipToast('⚠ MIC se desconectó');
-    }
+  _detachMicDeathWatch();
+  const onDeath = () => {
+    if (!extMicOnlyMode || _extChainDesiredMode !== 'mic') return;
+    _detachMicDeathWatch();
+    const watchedIntent = _extChainIntent;
+    _enqueueExtChainTask(async () => {
+      const isCurrent = () => (
+        watchedIntent === _extChainIntent &&
+        _extChainDesiredMode === 'mic' && extMicOnlyMode
+      );
+      while (isCurrent()) {
+        const now = performance.now();
+        _micRebuildHistory = _micRebuildHistory.filter(t => now - t < 30000);
+        if (_micRebuildHistory.length >= 3) {
+          _extChainDesiredMode = 'off';
+          _extChainIntent++;
+          await _stopMicOnlyNow();
+          const btn = document.getElementById('btnMicMobile');
+          if (btn) { btn.classList.remove('active'); btn.textContent = '🎙'; }
+          flipToast('⚠ MIC agotó 3 reintentos en 30s');
+          return;
+        }
+        _micRebuildHistory.push(now);
+        const backoffMs = 250 * Math.pow(2, _micRebuildHistory.length - 1);
+        await new Promise(res => setTimeout(res, backoffMs));
+        if (!isCurrent()) { await _clearExtAudioChain(); return; }
+        try {
+          const rebuilt = await _buildExtAudioChain(undefined, isCurrent);
+          if (!isCurrent()) { await _clearExtAudioChain(); return; }
+          if (!rebuilt) return;
+          _micWatchTrackDeath(extMicStream.getAudioTracks()[0]);
+          await _micReacquireCameraIfDead(isCurrent);
+          if (!isCurrent()) { await _clearExtAudioChain(); return; }
+          console.log('[MicOnly] audio chain rebuilt after track death.');
+          return;
+        } catch (err) {
+          if (!isCurrent()) { await _clearExtAudioChain(); return; }
+          console.warn('[MicOnly] audio rebuild attempt failed:', err);
+        }
+      }
+    }).catch(err => console.warn('[MicOnly] watchdog failed:', err));
   };
   _micDeathHandler = onDeath;
+  _micDeathTrack = track || null;
   if (track) {
     track.addEventListener('ended', onDeath);
     track.addEventListener('mute', onDeath);
@@ -18488,37 +18633,52 @@ async function startMicOnly() {
   // Snapshot whether the camera looked alive BEFORE requesting the mic, so we know
   // whether it's worth checking/reacquiring afterwards.
   const camWasActive = !!(stream && stream.getVideoTracks().some(t => t.readyState === 'live'));
+  return _queueExtChainIntent('mic', async (intent, isCurrent) => {
+    _micRebuildHistory = [];
+    try {
+      const built = await _buildExtAudioChain(undefined, isCurrent);
+      if (!built || !isCurrent()) return false;
+      extAudioMode = false;
+      extMicOnlyMode = true;
+      console.log('[MicOnly] started. Stream tracks:', extMicStream.getTracks().map(t => t.label));
 
-  await _buildExtAudioChain();
-  extMicOnlyMode = true;
-  console.log('[MicOnly] started. Stream tracks:', extMicStream.getTracks().map(t => t.label));
+      _micWatchTrackDeath(extMicStream.getAudioTracks()[0]);
 
-  _micWatchTrackDeath(extMicStream.getAudioTracks()[0]);
+      if (camWasActive) await _micReacquireCameraIfDead(isCurrent);
+      else if (typeof window._sflowRestartCam === 'function') {
+        await Promise.resolve(window._sflowRestartCam());
+      }
+      if (!isCurrent()) { await _clearExtAudioChain(); return false; }
 
-  if (camWasActive) _micReacquireCameraIfDead();
-  else if (typeof window._sflowRestartCam === 'function') window._sflowRestartCam();
+      // F5 — kick-start the visual loop for whichever tab the user is already parked on,
+      // mirroring startExtAudio()'s kick (see above), so CAM/ASCII/FUSION start reacting to
+      // the mic immediately instead of requiring a tab switch. Gated on the loop's *alive*
+      // flag (not just its xRunning flag — cameraRunning/asciiRunning/fusionRunning get forced
+      // true by switchTab even when no camera/audio was available to actually kick the rAF
+      // chain at that moment) so we never spawn a duplicate chain on top of one already ticking.
+      if (activeTab === 'cam' && !_camLoopAlive) { cameraRunning = true; requestAnimationFrame(cameraLoop); }
+      else if (activeTab === 'ascii' && !_asciiLoopAlive) { asciiRunning = true; requestAnimationFrame(asciiLoop); }
+      else if (activeTab === 'fusion' && !_fusionLoopAlive) { fusionRunning = true; requestAnimationFrame(_fusionLoop); }
 
-  // F5 — kick-start the visual loop for whichever tab the user is already parked on,
-  // mirroring startExtAudio()'s kick (see above), so CAM/ASCII/FUSION start reacting to
-  // the mic immediately instead of requiring a tab switch. Gated on the loop's *alive*
-  // flag (not just its xRunning flag — cameraRunning/asciiRunning/fusionRunning get forced
-  // true by switchTab even when no camera/audio was available to actually kick the rAF
-  // chain at that moment) so we never spawn a duplicate chain on top of one already ticking.
-  if (activeTab === 'cam' && !_camLoopAlive) { cameraRunning = true; requestAnimationFrame(cameraLoop); }
-  else if (activeTab === 'ascii' && !_asciiLoopAlive) { asciiRunning = true; requestAnimationFrame(asciiLoop); }
-  else if (activeTab === 'fusion' && !_fusionLoopAlive) { fusionRunning = true; requestAnimationFrame(_fusionLoop); }
-
-  _startMicLevelFeedback();
+      _startMicLevelFeedback();
+      return true;
+    } catch (err) {
+      if (intent === _extChainIntent) {
+        _extChainDesiredMode = 'off';
+        extMicOnlyMode = false;
+      }
+      throw err;
+    }
+  });
 }
 
 async function stopMicOnly() {
-  _stopMicLevelFeedback();
-  if (extMicStream) { extMicStream.getTracks().forEach(t => t.stop()); extMicStream = null; }
-  if (extAudioCtx)  { await extAudioCtx.close().catch(()=>{}); extAudioCtx = null; }
-  extAnalyser = null;
-  FlipAudioReact.attach(null);
-  extMicOnlyMode = false;
-  _micDeathHandler = null;
+  return _queueExtChainIntent('off', async (_intent, isCurrent) => {
+    if (!isCurrent()) return false;
+    _micRebuildHistory = [];
+    await _stopMicOnlyNow();
+    return isCurrent();
+  });
 }
 
 // ── F4 — feedback visual de nivel en el botón #btnMicMobile ─────────────────
