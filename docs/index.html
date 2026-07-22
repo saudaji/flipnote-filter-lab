@@ -49,6 +49,7 @@
       align-items:stretch;
       background:var(--flip-bg-deep);
     }
+    body.flip-os #splash { display:none; }
     body.flip-os,
     body.flip-os.ascii-mode,
     body.flip-os.sono-mode {
@@ -12177,7 +12178,8 @@ function _renderZoomSticker(ctx, cx, cy, r, selected) {
 // flag set true (e.g. cameraRunning is forced true by switchTab even when the initial kick
 // was skipped because no camera/audio source existed yet at that moment). Set true on every
 // live iteration, false on the single exit path (the !xRunning early return).
-let _camLoopAlive = false, _asciiLoopAlive = false, _fusionLoopAlive = false;
+let _camLoopAlive = false, _asciiLoopAlive = false, _sonoLoopAlive = false;
+let _scrashLoopAlive = false, _fusionLoopAlive = false, _editLoopAlive = false;
 
 function cameraLoop(t) {
   if (!cameraRunning) { _camLoopAlive = false; return; }
@@ -12314,7 +12316,7 @@ function clearAsciiStatic() {
   if (asciiVideoEl) { asciiVideoEl.pause(); asciiVideoEl.removeAttribute('src'); asciiVideoEl = null; }
   ctxAscii.fillStyle = '#000'; ctxAscii.fillRect(0, 0, OUT_W, OUT_H);
   _syncCamZoomUI();
-  if (asciiRunning) requestAnimationFrame(asciiLoop);
+  if (asciiRunning && !_asciiLoopAlive) requestAnimationFrame(asciiLoop);
 }
 
 function asciiSettingsChanged() {
@@ -12691,6 +12693,7 @@ function _syncScrashHudVisibility() {
 }
 
 function switchTab(tab) {
+  if (tab === activeTab) return;
   activeTab = tab;
   _syncCamPanels();
   _syncCamThemeClasses();
@@ -12756,6 +12759,19 @@ function switchTab(tab) {
   // Stop SF cam when leaving the tab
   if (!isSflow) _sflowStop();
 
+  // Unified REC policy: leaving a module always finalizes its current take.
+  if (!isCam && recorder && recorder.state !== 'inactive') {
+    _stopRecorderSafely(recorder);
+    stopRecTimer();
+    btnCap.classList.remove('recording');
+  }
+  if (!isAscii && asciiRecorder && asciiRecorder.state !== 'inactive') {
+    asciiRecordingHighQuality = false;
+    _stopRecorderSafely(asciiRecorder);
+    document.getElementById('btnAsciiCapture').classList.remove('recording');
+    _syncAsciiCaptureVisual(false);
+  }
+
   // Themes
   document.body.classList.toggle('ascii-mode', isAscii);
   document.body.classList.toggle('sono-mode',  isSono);
@@ -12801,9 +12817,9 @@ function switchTab(tab) {
   if ((isCam || isAscii || isScrash || isFusion) && !stream && !extAudioMode) startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
   // F5 — paridad móvil: extMicOnlyMode también cuenta como fuente para arrancar estos loops
   // (además de la cámara real o EXT AUDIO clásico de desktop).
-  if (isCam   && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser))) requestAnimationFrame(cameraLoop);
-  if (isAscii && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser) || asciiStaticSrc)) requestAnimationFrame(asciiLoop);
-  if (isFusion && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser))) requestAnimationFrame(_fusionLoop);
+  if (isCam && !_camLoopAlive && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser))) requestAnimationFrame(cameraLoop);
+  if (isAscii && !_asciiLoopAlive && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser) || asciiStaticSrc)) requestAnimationFrame(asciiLoop);
+  if (isFusion && !_fusionLoopAlive && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser))) requestAnimationFrame(_fusionLoop);
 }
 
 document.getElementById('tabCam'  ).addEventListener('click', () => switchTab('cam'));
@@ -15610,8 +15626,9 @@ async function _bootFromSplash() {
   splash.classList.add('hidden');
   try {
     await startCamera(facingMode);
+    if (activeTab !== 'cam') return;
     cameraRunning = true;
-    requestAnimationFrame(cameraLoop);
+    if (!_camLoopAlive) requestAnimationFrame(cameraLoop);
   } catch (err) {
     // Camera failed (denied / unavailable) — enter the app anyway so
     // non-camera modules (UPLOAD, WMP, GLITCH…) stay usable. switchTab
@@ -16642,7 +16659,8 @@ function fmtTime(s) {
 
 // ── SONO render loop ──────────────────────────────────────────────────
 function sonoLoop(ts) {
-  if (!sonoRunning) return;
+  if (!sonoRunning) { _sonoLoopAlive = false; return; }
+  _sonoLoopAlive = true;
   if (sonoLastRAF) sonoT += (ts - sonoLastRAF) / 1000;
   sonoLastRAF = ts;
 
@@ -16760,7 +16778,7 @@ async function startSonoMic() {
     src.connect(sonoAnalyser); // NOT connected to destination → no feedback
     document.getElementById('sonoPerm').classList.remove('visible');
     sonoRunning = true; sonoLastRAF = 0;
-    requestAnimationFrame(sonoLoop);
+    if (!_sonoLoopAlive) requestAnimationFrame(sonoLoop);
     return true;
   } catch(e) {
     flipToast('⚠ Mic access denied: ' + e.message);
@@ -16796,14 +16814,15 @@ function enterSono() {
   if ((extAudioMode || extMicOnlyMode) && extAnalyser) {
     // Ext audio (desktop) or mic-only (mobile) active — use shared extAnalyser, no mic permission needed
     document.getElementById('sonoPerm').classList.remove('visible');
-    if (!sonoRunning) { sonoRunning = true; sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
+    sonoRunning = true;
+    if (!_sonoLoopAlive) { sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
     return;
   }
   if (sonoMicStream) {
     // Already have mic, just restart loop
     document.getElementById('sonoPerm').classList.remove('visible');
     sonoRunning = true; sonoLastRAF = 0;
-    requestAnimationFrame(sonoLoop);
+    if (!_sonoLoopAlive) requestAnimationFrame(sonoLoop);
   } else {
     // Check if permission was already granted this session → auto-start
     // (async: only show the overlay if the user is still on the SONO tab)
@@ -16999,10 +17018,8 @@ async function sonoLoadFile(file) {
   await sonoAudioEl.play();
   document.getElementById('btnSonoCapture').querySelector('.btn-icon').textContent = '⏸';
 
-  if (!sonoRunning) {
-    sonoRunning = true; sonoLastRAF = 0;
-    requestAnimationFrame(sonoLoop);
-  }
+  sonoRunning = true;
+  if (!_sonoLoopAlive) { sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
   relayout();
 }
 
@@ -17055,7 +17072,8 @@ document.getElementById('btnSonoCapture').addEventListener('click', async () => 
     if (sonoAudioEl.paused) {
       await sonoAudioEl.play();
       document.getElementById('btnSonoCapture').querySelector('.btn-icon').textContent = '⏸';
-      if (!sonoRunning) { sonoRunning = true; sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
+      sonoRunning = true;
+      if (!_sonoLoopAlive) { sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
     } else {
       sonoAudioEl.pause();
       document.getElementById('btnSonoCapture').querySelector('.btn-icon').textContent = '▶';
@@ -18348,22 +18366,23 @@ async function startExtAudio(deviceId) {
   if (activeTab === 'cam') {
     display.style.display = 'block';
     cameraRunning = true;
-    requestAnimationFrame(cameraLoop);
+    if (!_camLoopAlive) requestAnimationFrame(cameraLoop);
   } else if (activeTab === 'ascii') {
     asciiRunning = true;
-    requestAnimationFrame(asciiLoop);
+    if (!_asciiLoopAlive) requestAnimationFrame(asciiLoop);
   } else if (activeTab === 'sono') {
     document.getElementById('sonoPerm').classList.remove('visible');
-    if (!sonoRunning) { sonoRunning = true; sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
+    sonoRunning = true;
+    if (!_sonoLoopAlive) { sonoLastRAF = 0; requestAnimationFrame(sonoLoop); }
   } else if (activeTab === 'wmp') {
     document.getElementById('wmpPerm').classList.remove('visible');
     if (!wmpRunning) { wmpRunning = true; requestAnimationFrame(wmpLoop); }
   } else if (activeTab === 'scrash') {
     if (!scrashRunning) { scrashRunning = true; _scrStartT = null; }
-    if (!_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
+    if (!_scrashLoopAlive && !_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
   } else if (activeTab === 'fusion') {
     fusionRunning = true;
-    requestAnimationFrame(_fusionLoop);
+    if (!_fusionLoopAlive) requestAnimationFrame(_fusionLoop);
   } else if (activeTab === 'sflow') {
     if (typeof window._sflowStartExtAudio === 'function') window._sflowStartExtAudio();
   }
@@ -18398,17 +18417,17 @@ async function stopExtAudio() {
     await startCamera(facingMode);
     display.style.display = 'block';
     cameraRunning = true;
-    requestAnimationFrame(cameraLoop);
+    if (!_camLoopAlive) requestAnimationFrame(cameraLoop);
   } else if (activeTab === 'ascii') {
     await startCamera(facingMode);
     asciiRunning = true;
-    requestAnimationFrame(asciiLoop);
+    if (!_asciiLoopAlive) requestAnimationFrame(asciiLoop);
   } else if (activeTab === 'scrash') {
     await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
   } else if (activeTab === 'fusion') {
     await startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
     fusionRunning = true;
-    requestAnimationFrame(_fusionLoop);
+    if (!_fusionLoopAlive) requestAnimationFrame(_fusionLoop);
   } else if (activeTab === 'sflow') {
     // Don't force camera — FLOW starts via its own CAM button as usual.
     if (typeof window._sflowStop === 'function') window._sflowStop();
@@ -18684,7 +18703,7 @@ let _ctxScrAudioBuf;
     scrAnimateOn = !scrAnimateOn;
     document.getElementById('btnScrashAnimate').classList.toggle('active', scrAnimateOn);
     _syncScrashEditorPane();
-    if (scrashRunning && scrAnimateOn && !_scrRafId) {
+    if (scrashRunning && scrAnimateOn && !_scrashLoopAlive && !_scrRafId) {
       _scrStartT = null;
       _scrRafId = requestAnimationFrame(_scrashLoop);
     }
@@ -19028,7 +19047,8 @@ function _renderScrashAudioSource(w, h, t) {
 }
 
 function _scrashLoop(t) {
-  if (!scrashRunning) { _scrRafId = null; return; }
+  if (!scrashRunning) { _scrashLoopAlive = false; _scrRafId = null; return; }
+  _scrashLoopAlive = true;
   if (_scrStartT === null) _scrStartT = t;
   const elapsed = (t - _scrStartT) / 1000;
   const SW = scrashCvs.width, SH = scrashCvs.height;
@@ -19056,12 +19076,13 @@ function _scrashLoop(t) {
 function enterScrash() {
   scrashRunning = true;
   _scrStartT = null;
-  _scrRafId = requestAnimationFrame(_scrashLoop);
+  if (!_scrashLoopAlive && !_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
 }
 
 function exitScrash() {
   scrashRunning = false;
   if (_scrRafId) { cancelAnimationFrame(_scrRafId); _scrRafId = null; }
+  _scrashLoopAlive = false;
   if (scrashRecorder && scrashRecorder.state !== 'inactive') { _stopRecorderSafely(scrashRecorder); }
 }
 
@@ -19606,6 +19627,8 @@ if (screen.width > 768) {
   let _sfFacing        = 'user';
   let _sfRafId         = 0;
   let _sfActive        = false;
+  let _sfGen           = 0;
+  let _sfStarting      = false;
   let _sfColorKey      = 'palette';
   let _sfAuraKey       = 'm';
   let _sfSegmenter     = null;
@@ -20340,51 +20363,79 @@ if (screen.width > 768) {
 
   // ── Start camera ────────────────────────────────────────────────────
   async function _sfStart(facing) {
-    if (extAudioMode && extAnalyser) { _sfStartAudioMode(); return; }
-    _sfMode = 'cam';
-    _sfFacing = facing || _sfFacing;
-    _sfBadge('FLOW — starting…');
+    if (_sfStarting) return;
+    const gen = ++_sfGen;
+    _sfStarting = true;
+    let acquiredStream = null;
+    const releaseAcquired = () => {
+      if (!acquiredStream) return;
+      acquiredStream.getTracks().forEach(t => t.stop());
+      if (_sfStream === acquiredStream) _sfStream = null;
+      if (sfVid.srcObject === acquiredStream) sfVid.srcObject = null;
+      acquiredStream = null;
+    };
+    const stale = () => {
+      if (gen === _sfGen) return false;
+      releaseAcquired();
+      return true;
+    };
 
-    // Stop any existing stream
-    if (_sfStream) {
-      _sfStream.getTracks().forEach(t => t.stop());
-      _sfStream = null;
-    }
-    sfVid.srcObject = null;
-
-    // Get own stream
     try {
-      _sfStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: _sfFacing, width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false,
-      });
-      sfVid.srcObject = _sfStream;
-      await new Promise((res, rej) => {
-        sfVid.onloadedmetadata = res;
-        sfVid.onerror = rej;
-        setTimeout(rej, 8000);
-      });
-      await sfVid.play();
-    } catch (e) {
-      console.warn('SF cam error', e);
-      // F5 — móvil: el mic convive con la cámara, no la reemplaza (a diferencia de EXT
-      // AUDIO clásico de desktop). Por eso la prioridad se invierte respecto a desktop:
-      // acá SIEMPRE se intenta cámara primero (arriba); solo si falla/no está disponible
-      // caemos al blob de audio del mic como fallback.
-      if (extMicOnlyMode && extAnalyser) { _sfStartAudioMode(); return; }
-      _sfBadge('FLOW — camera denied');
-      return;
+      if (extAudioMode && extAnalyser) { _sfStartAudioMode(); return; }
+      _sfMode = 'cam';
+      _sfFacing = facing || _sfFacing;
+      _sfBadge('FLOW — starting…');
+
+      // Stop any existing stream
+      if (_sfStream) {
+        _sfStream.getTracks().forEach(t => t.stop());
+        _sfStream = null;
+      }
+      sfVid.srcObject = null;
+
+      // Get own stream
+      try {
+        acquiredStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: _sfFacing, width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false,
+        });
+        if (stale()) return;
+        _sfStream = acquiredStream;
+        sfVid.srcObject = acquiredStream;
+        await new Promise((res, rej) => {
+          sfVid.onloadedmetadata = res;
+          sfVid.onerror = rej;
+          setTimeout(rej, 8000);
+        });
+        if (stale()) return;
+        await sfVid.play();
+        if (stale()) return;
+      } catch (e) {
+        releaseAcquired();
+        if (gen !== _sfGen) return;
+        console.warn('SF cam error', e);
+        // F5 — móvil: el mic convive con la cámara, no la reemplaza (a diferencia de EXT
+        // AUDIO clásico de desktop). Por eso la prioridad se invierte respecto a desktop:
+        // acá SIEMPRE se intenta cámara primero (arriba); solo si falla/no está disponible
+        // caemos al blob de audio del mic como fallback.
+        if (extMicOnlyMode && extAnalyser) { _sfStartAudioMode(); return; }
+        _sfBadge('FLOW — camera denied');
+        return;
+      }
+
+      // Init segmenter
+      const ok = await _sfInitSegmenter();
+      if (stale()) return;
+      if (!ok) { releaseAcquired(); return; }
+
+      _sfResize();
+      _sfActive = true;
+      _sfBadge('');
+      cancelAnimationFrame(_sfRafId);
+      _sfRafId = requestAnimationFrame(_sfLoop);
+    } finally {
+      if (gen === _sfGen) _sfStarting = false;
     }
-
-    // Init segmenter
-    const ok = await _sfInitSegmenter();
-    if (!ok) return;
-
-    _sfResize();
-    _sfActive = true;
-    _sfBadge('');
-    cancelAnimationFrame(_sfRafId);
-    _sfRafId = requestAnimationFrame(_sfLoop);
   }
 
   // Exposed so startMicOnly() can re-acquire FLOW's own camera stream when iOS
@@ -20395,6 +20446,8 @@ if (screen.width > 768) {
 
   // ── Stop (exposed globally so switchTab can call it) ────────────────
   window._sflowStop = function _sflowStop() {
+    _sfGen++;
+    _sfStarting = false;
     _sfActive = false;
     _sfMode = 'cam';
     cancelAnimationFrame(_sfRafId);
@@ -20933,7 +20986,8 @@ function _editStepParams(step) {
 }
 
 function _editLoop(ts) {
-  if (!editRunning) return;
+  if (!editRunning) { _editLoopAlive = false; return; }
+  _editLoopAlive = true;
   const minInterval = 1000 / 30;
   if (ts - _editLastFrameMs >= minInterval) {
     const srcCanvas = _editGetSrcCanvas();
@@ -21368,7 +21422,7 @@ function _editLoop(ts) {
     if (editSource.type === 'cam' && !stream && !extAudioMode) {
       startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
     }
-    requestAnimationFrame(_editLoop);
+    if (!_editLoopAlive) requestAnimationFrame(_editLoop);
   };
 })();
 
@@ -22121,6 +22175,7 @@ function _flipOsBuildDesktopIcons() {
 }
 function _flipOsShowDesktop() {
   if (!window.FLIP_BETA) return;
+  if (activeTab !== 'up') switchTab('up');
   _flipOsStopWindowDrag();
   clearTimeout(_flipOsState.openTimer);
   clearTimeout(_flipOsState.closeTimer);
@@ -22190,6 +22245,9 @@ function _flipOsCloseModule() {
   if (!window.FLIP_BETA || !document.body.classList.contains('flip-os-module-open')) return;
   clearTimeout(_flipOsState.openTimer);
   clearTimeout(_flipOsState.closeTimer);
+  // Route through the regular tab lifecycle so the module's loop, recorder,
+  // permission overlay and owned stream use the same teardown as navigation.
+  switchTab('up');
   if (_flipOsState.windowEl) {
     _flipOsState.windowEl.classList.remove('is-open');
     _flipOsState.windowEl.classList.add('is-closing');
