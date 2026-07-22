@@ -1,4 +1,4 @@
-const CACHE = 'flipnote-filter-lab-v82-perf-interim';
+const CACHE = 'flipnote-filter-lab-v83-edit-higiene';
 const CDN_CACHE = 'flip-cdn-v1';
 const CORE_ASSETS = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png', './pretext.js'];
 const FONT_ASSETS = [
