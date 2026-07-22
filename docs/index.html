@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0F380F">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
@@ -598,13 +598,13 @@
     }
     body.flip-os #flipOsAppHost #wmpArea,
     body.flip-os #flipOsAppHost #wmpPerm {
-      bottom:168px !important;
+      bottom:calc(96px + var(--wmp-hud-h, 72px)) !important;
     }
     body.flip-os.wmp-file #flipOsAppHost #wmpArea {
-      bottom:228px !important;
+      bottom:calc(156px + var(--wmp-hud-h, 72px)) !important;
     }
     body.flip-os.wmp-file #flipOsAppHost #wmpPerm {
-      bottom:228px !important;
+      bottom:calc(156px + var(--wmp-hud-h, 72px)) !important;
     }
     body.flip-os #flipOsAppHost #scrashControls {
       max-height:calc(100% - 96px) !important;
@@ -614,7 +614,7 @@
         grid-template-columns:repeat(3, minmax(0, 1fr));
       }
     }
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       #flipOsAppStage {
         padding:0;
       }
@@ -676,7 +676,7 @@
     .cam-stk-reset { background:none; border:1px solid var(--dark); color:var(--mid); font-family:monospace; font-size:9px; letter-spacing:.5px; width:100%; padding:3px 0; cursor:pointer; border-radius:2px; }
     .cam-stk-reset:active { background:var(--dark); }
     /* Hide floating aspect selector on mobile when edit panel is open (asp-btns are inside panel) */
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       body.ascii-mode.ascii-edit #camAspect { display: none !important; }
     }
 
@@ -685,6 +685,8 @@
       position:fixed; top:0; left:0; right:0; z-index:20;
       height:40px; display:flex;
       border-bottom:2px solid var(--dark); background:var(--ink);
+      padding-left:env(safe-area-inset-left, 0px);
+      padding-right:env(safe-area-inset-right, 0px);
     }
     .tab {
       flex:1; height:100%; background:none; border:none;
@@ -728,8 +730,8 @@
     }
     body.ascii-edit #asciiPanel { display:block; }
 
-    /* ── DESKTOP: two-column split (≥768px) ── */
-    @media (min-width:768px) {
+    /* ── DESKTOP: two-column split (≥769px y alto >500px) ── */
+    @media (min-width:769px) and (min-height:501px) {
       body.ascii-edit #asciiArea {
         flex-direction:row; align-items:stretch; justify-content:flex-start;
       }
@@ -747,7 +749,7 @@
     }
 
     /* ── MOBILE: image on top, params below, scroll within area ── */
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       body.ascii-edit #asciiArea {
         flex-direction:column; align-items:stretch;
         justify-content:flex-start; overflow:hidden;
@@ -1352,7 +1354,7 @@
 
     /* ── Flip ── */
     #btnFlip {
-      position:fixed; top:48px; left:12px; z-index:10;
+      position:fixed; top:48px; left:calc(12px + env(safe-area-inset-left, 0px)); z-index:10;
       background:none; border:none; cursor:pointer;
       color:var(--paper); font-family:monospace;
       font-size:10px; letter-spacing:1px;
@@ -1567,7 +1569,7 @@
     #barScrash.visible { display:flex; }
 
     /* ── GLITCH desktop sidebar layout ── */
-    @media (min-width:769px) {
+    @media (min-width:769px) and (min-height:501px) {
       /* Canvas always fills the main area; controls become a right sidebar */
       body.scrash-hud-open #scrashArea {
         right:300px;
@@ -1608,6 +1610,7 @@
     #btnFusionRec.recording .btn-label { color:#ff6666; }
     #fusionHUD {
       display:none; position:fixed; bottom:96px; left:0; right:0; height:auto;
+      max-height:52vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
       background:var(--ink); border-top:1px solid var(--dark);
       flex-direction:column; gap:6px; padding:8px 14px; z-index:9;
     }
@@ -1690,7 +1693,7 @@
     #barAscii.visible { display:flex; }
 
     /* ── ASCII mobile touch targets ── */
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       /* Global: all panel sliders get 44px touch height */
       .ac-row { margin-bottom:8px; min-height:44px; align-items:center; }
       .ac-row input[type="range"] { height:44px; }
@@ -1917,6 +1920,7 @@
     #sflowArea.visible { display:flex; }
     #sflowHUD {
       display:none; position:fixed; bottom:96px; left:0; right:0; height:auto;
+      max-height:52vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
       background:var(--ink); border-top:1px solid var(--dark);
       flex-direction:column; gap:6px; padding:8px 14px; z-index:9;
     }
@@ -1940,6 +1944,9 @@
       display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
       background:var(--ink); border-top:2px solid var(--dark);
       align-items:center; justify-content:space-around; padding:0 8px; z-index:10;
+      padding-left:calc(8px + env(safe-area-inset-left, 0px));
+      padding-right:calc(8px + env(safe-area-inset-right, 0px));
+      padding-bottom:env(safe-area-inset-bottom);
       gap:6px;
     }
     #barSflow.visible { display:flex; }
@@ -2044,7 +2051,7 @@
       margin:-4px 0 4px; border:1px solid var(--dark); border-top:none; background:rgba(255,255,255,.02);
     }
     .edit-glitch-panel .edit-mini-row.full { grid-column:1 / -1; }
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       .edit-glitch-panel { grid-template-columns:1fr; }
     }
     /* ── ASCII / FLOW per-layer expandable panels ───────────────────── */
@@ -2055,11 +2062,14 @@
       display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
       background:var(--ink); border-top:2px solid var(--dark);
       align-items:center; justify-content:space-around; padding:0 20px; z-index:10;
+      padding-left:calc(20px + env(safe-area-inset-left, 0px));
+      padding-right:calc(20px + env(safe-area-inset-right, 0px));
+      padding-bottom:env(safe-area-inset-bottom);
     }
     #barEdit.visible { display:flex; }
     #btnEditRec.recording .btn-icon { background:#bb0000; border-color:#ff4444; animation:pulse 1s ease-in-out infinite; }
     #btnEditRec.recording .btn-label { color:#ff6666; }
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       .edit-src-pill, .edit-layer-bypass, .edit-layer-btn, .edit-add-btn, .edit-layer-cfg, .edit-fam-pill { min-height:40px; }
       .edit-mini-row input[type="range"] { height:40px; }
     }
@@ -2085,6 +2095,8 @@
       display:none; position:fixed; bottom:0; left:0; right:0; height:96px;
       background:var(--ink); border-top:2px solid var(--dark);
       align-items:center; justify-content:space-around; padding:0 20px;
+      padding-left:calc(20px + env(safe-area-inset-left, 0px));
+      padding-right:calc(20px + env(safe-area-inset-right, 0px));
       padding-bottom:env(safe-area-inset-bottom); z-index:10;
     }
     #barStage.visible { display:flex; }
@@ -2094,8 +2106,11 @@
     body.stage-mode #btnAudioIO,
     body.stage-mode #audioIOPanel,
     body.stage-mode #btnExtCapture { display:none !important; }
-    @media (max-width:767px) {
-      #barStage { padding-left:0; padding-right:0; }
+    @media (max-width:768px), (max-height:500px) {
+      #barStage {
+        padding-left:env(safe-area-inset-left, 0px);
+        padding-right:env(safe-area-inset-right, 0px);
+      }
       #barStage .btn { flex:1; min-width:0; padding:8px 1px; }
       #barStage .btn-label { font-size:8px; letter-spacing:0; }
     }
@@ -2144,7 +2159,7 @@
       #chaosRow input[type="range"]::-moz-range-thumb { width:28px; height:28px; }
     }
     /* ── SONO / WMP / SCRASH mobile touch targets ── */
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       #uploadSection {
         justify-content:flex-start;
       }
@@ -2176,6 +2191,27 @@
       .wmp-ctrl input[type="range"] { height:44px; }
       .wmp-ctrl input[type="range"]::-webkit-slider-thumb { width:28px; height:28px; }
       .wmp-ctrl input[type="range"]::-moz-range-thumb { width:28px; height:28px; }
+      .typo-pill,
+      .cam-fam-btn,
+      .sc-py-btn,
+      .scr-asp-btn,
+      .sono-preset-btn,
+      .wmp-preset-btn,
+      .pcs-slot { min-width:40px; min-height:40px; }
+      body.cam-family-open #flipSettingsTrigger,
+      body.cam-family-open #btnMicMobile,
+      body.cam-family-open #btnAudioIO,
+      body.cam-family-open #btnFlip,
+      body.cam-ui-active.cam-edit-open #btnFlip {
+        opacity:0 !important; pointer-events:none !important;
+      }
+    }
+    @media (max-height:500px) {
+      body.flip-hud-tab-active #flipSettingsTrigger,
+      body.flip-hud-tab-active #btnMicMobile,
+      body.flip-hud-tab-active #btnAudioIO {
+        opacity:0 !important; pointer-events:none !important;
+      }
     }
 
     /* ══════════════════════════════════════════════════════
@@ -2254,7 +2290,7 @@
        WMP XP VISUALIZER
     ══════════════════════════════════════════════════════ */
     #wmpArea {
-      display:none; position:fixed; top:40px; bottom:168px; left:0; right:0;
+      display:none; position:fixed; top:40px; bottom:calc(96px + var(--wmp-hud-h, 72px)); left:0; right:0;
       background:#000; overflow:hidden;
     }
     #wmpArea.visible { display:block; }
@@ -2262,7 +2298,7 @@
 
     /* ── WMP permission / source select overlay ── */
     #wmpPerm {
-      display:none; position:fixed; top:40px; bottom:168px; left:0; right:0;
+      display:none; position:fixed; top:40px; bottom:calc(96px + var(--wmp-hud-h, 72px)); left:0; right:0;
       flex-direction:column; align-items:center; justify-content:center;
       gap:20px; padding:32px; z-index:11; background:rgba(0,0,0,.85);
     }
@@ -2281,6 +2317,7 @@
     /* ── WMP HUD (72px, two rows) ── */
     #wmpHUD {
       display:none; position:fixed; bottom:96px; left:0; right:0; height:auto; min-height:72px;
+      max-height:52vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
       background:#0d0d0d; border-top:1px solid #1e1e1e;
       flex-direction:column; justify-content:space-around;
       padding:6px 14px; gap:4px; z-index:9;
@@ -2318,7 +2355,7 @@
     body.wmp-pseudo-full { overflow:hidden; }
 
     /* ── WMP file mode layout adjustments ── */
-    body.wmp-file #wmpArea { bottom:228px; }
+    body.wmp-file #wmpArea { bottom:calc(156px + var(--wmp-hud-h, 72px)); }
     body.wmp-file #wmpHUD  { bottom:156px; }
 
     /* ── Progress bars (SONO + WMP) ── */
@@ -2379,13 +2416,13 @@
     /* ── C — Riel superior derecho unificado (desktop) ──
        slot1 (top:52,  flipSettingsTrigger) · slot2 (top:100, btnAudioIO) ·
        slot3 (top:148, btnExtCapture — solo si body.ext-audio). Mismo tamaño 44×44,
-       mismo right:18 que .flip-settings-trigger. El panel de audio abre DEBAJO del
+       mismo right seguro que .flip-settings-trigger. El panel de audio abre DEBAJO del
        slot ocupado más profundo (148 normal, 196 con CAPTURAR visible) para no
        taparlo nunca. z: rail=120/121 (a la par de flipSettingsTrigger), panel=122. */
-    @media (min-width:769px) {
+    @media (min-width:769px) and (min-height:501px) {
       #btnAudioIO { display:flex; }
       #audioIOPanel {
-        position:fixed; top:148px; right:18px; width:260px; height:auto;
+        position:fixed; top:148px; right:calc(12px + env(safe-area-inset-right, 0px)); width:260px; height:auto;
         max-height:300px; overflow-y:auto; box-sizing:border-box;
         background:var(--ink); border:1px solid rgba(255,255,255,0.14); border-radius:10px;
         padding:12px; z-index:122; display:none; flex-direction:column; gap:8px;
@@ -2394,7 +2431,7 @@
       body.ext-audio #audioIOPanel { top:196px; }
       #audioIOPanel.open { display:flex; }
       #btnAudioIO {
-        position:fixed; top:100px; right:18px; z-index:121;
+        position:fixed; top:100px; right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
         width:44px; height:44px; border-radius:50%;
         background:rgba(26,26,30,0.92); border:1px solid rgba(255,255,255,0.14);
         color:#F0EDE6; font-family:monospace; font-size:8px; letter-spacing:0.5px;
@@ -2413,7 +2450,7 @@
       #btnExtCapture {
         /* slot3 del riel — solo visible con ext-audio activo; el panel de audio se
            corre a top:196 (ver arriba) para no taparlo cuando ambos coexisten */
-        position:fixed; top:148px; right:18px; z-index:121;
+        position:fixed; top:148px; right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
         width:44px; height:44px; border-radius:50%;
         background:var(--paper); color:var(--ink); border:none;
         font-family:monospace; font-size:8px; font-weight:bold; letter-spacing:0.5px;
@@ -2430,10 +2467,10 @@
        .audio-io-label / .audio-io-select / #btnExtAudioToggle viven DENTRO del @media
        (min-width:769px) de arriba, así que no aplican acá abajo — se redeclaran completas
        (no solo overrides) con layout/tamaños pensados para touch. ── */
-    @media (max-width:768px) {
+    @media (max-width:768px), (max-height:500px) {
       #btnAudioIO {
         display:flex; align-items:center; justify-content:center; text-align:center;
-        position:fixed; top:calc(148px + env(safe-area-inset-top, 0px)); right:12px; z-index:121;
+        position:fixed; top:calc(148px + env(safe-area-inset-top, 0px)); right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
         width:44px; height:44px; border-radius:50%;
         background:rgba(26,26,30,0.92); border:1px solid rgba(255,255,255,0.14);
         color:#F0EDE6; font-family:monospace; font-size:8px; letter-spacing:0.5px; line-height:1.15;
@@ -2442,8 +2479,9 @@
       }
       body.ext-audio #btnAudioIO, #btnAudioIO.active { color:var(--paper); border-color:var(--paper); }
       #audioIOPanel {
-        position:fixed; top:calc(196px + env(safe-area-inset-top, 0px)); right:8px;
-        width:auto; max-width:90vw; max-height:60vh; overflow-y:auto; box-sizing:border-box;
+        position:fixed; top:calc(196px + env(safe-area-inset-top, 0px)); right:calc(8px + env(safe-area-inset-right, 0px));
+        bottom:calc(96px + env(safe-area-inset-bottom, 0px));
+        width:auto; max-width:90vw; max-height:none; overflow-y:auto; box-sizing:border-box;
         background:var(--ink); border:2px solid var(--dark);
         padding:12px; z-index:122; display:none; flex-direction:column; gap:10px;
         font-size:12px;
@@ -2472,6 +2510,7 @@
       }
       #audioIOPanel input[type="range"] { min-height:40px; }
       #audioIOPanel #extGainSlider, #audioIOPanel #monitorVol { height:40px; }
+      body.cam-ui-active #audioIOPanel { bottom:164px; }
     }
 
     /* ── F4: MIC móvil — botón flotante, visible SOLO en móvil (opuesto de .desktop-only arriba) ──
@@ -2479,7 +2518,7 @@
        arriba de #btnAudioIO (slot3), mismo right:12/44px que el resto del riel. */
     #btnMicMobile {
       position: fixed;
-      right: 12px;
+      right: calc(12px + env(safe-area-inset-right, 0px));
       top: calc(100px + env(safe-area-inset-top, 0px));
       width: 44px; height: 44px; border-radius: 50%;
       border: 1px solid rgba(255,255,255,0.14);
@@ -2506,7 +2545,7 @@
       0%, 100% { box-shadow: 0 8px 24px rgba(0,0,0,.35); }
       50% { box-shadow: 0 0 0 6px rgba(155,188,15,.22), 0 8px 24px rgba(0,0,0,.35); }
     }
-    @media (min-width:769px) {
+    @media (min-width:769px) and (min-height:501px) {
       #btnMicMobile { display:none; }
     }
     /* ── Global loading overlay ── */
@@ -2740,17 +2779,20 @@
       color: var(--paper);
       border-color: var(--mid);
     }
-    @media (max-width:767px) {
+    @media (max-width:768px), (max-height:500px) {
       body.cam-ui-active.cam-edit-open .palettes {
         left:8px;
         right:8px;
-        bottom:152px;
+        bottom:164px;
         max-width:none;
+        max-height:calc(100dvh - 204px);
+        overflow-y:auto;
+        -webkit-overflow-scrolling:touch;
       }
       #camFamilyTray {
         left:8px;
         right:8px;
-        bottom:152px;
+        bottom:164px;
       }
       #camControlDock {
         padding:8px 8px 10px;
@@ -2779,6 +2821,17 @@
       .pcs-slot {
         width:calc((100% - 8px) / 5);
       }
+    }
+    @media (max-height:500px) {
+      body.cam-ui-active.cam-edit-open #camMobileUtilityDock:not(:empty) {
+        display:grid;
+        grid-template-columns:minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-rows:auto auto;
+        align-items:start;
+      }
+      .cam-mobile-inline#camAspect { grid-column:1; grid-row:1 / 3; }
+      .cam-mobile-inline#camFpsCtrl { grid-column:2; grid-row:1; }
+      .cam-mobile-inline#camZoomCtrl { grid-column:2; grid-row:2; }
     }
   </style>
 </head>
@@ -4204,7 +4257,10 @@ function _asciiInvertMap(inkCss, paperCss) {
   return _cssColorLum(paperCss) < _cssColorLum(inkCss);
 }
 const EARLY_IS_ANDROID = /Android/i.test(navigator.userAgent);
-const EARLY_IS_MOBILE = window.innerWidth <= 768 || /Mobi|Android/i.test(navigator.userAgent);
+function FLIP_IS_MOBILE() {
+  return window.innerWidth <= 768 || window.innerHeight <= 500;
+}
+const EARLY_IS_MOBILE = FLIP_IS_MOBILE();
 const _flipUrlParams = new URLSearchParams(window.location.search);
 const IS_BETA = _flipUrlParams.get('beta') === '1';
 try {
@@ -4793,7 +4849,7 @@ function relayout() {
   display.style.height = h + 'px';
 
   let aw, ah;
-  if (asciiPanelOpen && avW >= 768) {
+  if (asciiPanelOpen && !FLIP_IS_MOBILE()) {
     const colW = avW - PANEL_W;
     if (colW / avH > aspect) { ah = avH; aw = ah * aspect; }
     else { aw = colW; ah = aw / aspect; }
@@ -4819,8 +4875,10 @@ function relayout() {
   document.getElementById('sonoCanvas').style.height = sh + 'px';
 
   if (!wmpPseudoFull) {
-    const avHW = Math.max(140, viewport.height - viewport.topInset - (document.body.classList.contains('wmp-file') ? 228 : 168));
-    document.getElementById('wmpCanvas').style.width = avW + 'px';
+    const wmpAreaRect = document.getElementById('wmpArea').getBoundingClientRect();
+    const avWW = Math.max(1, Math.round(wmpAreaRect.width || avW));
+    const avHW = Math.max(1, Math.round(wmpAreaRect.height || 140));
+    document.getElementById('wmpCanvas').style.width = avWW + 'px';
     document.getElementById('wmpCanvas').style.height = avHW + 'px';
   }
   _syncUploadPanelLayout();
@@ -5500,9 +5558,10 @@ function _syncCamPanels() {
     camEditOpen = false;
   }
   document.body.classList.toggle('cam-ui-active', isCam);
+  document.body.classList.toggle('cam-family-open', isCam && camFamilyTrayOpen);
   document.body.classList.toggle('cam-edit-open', isCam && camEditOpen && _hasCamEditor());
   document.getElementById('camControlDock').classList.toggle('visible', isCam);
-  document.getElementById('camFamilyTray').classList.toggle('visible', isCam && (camFamilyTrayOpen || (camEditOpen && _hasCamEditor())));
+  document.getElementById('camFamilyTray').classList.toggle('visible', isCam && camFamilyTrayOpen);
   _syncCamMobileUtilityDock();
 }
 function _syncCamThemeClasses() {
@@ -9249,7 +9308,7 @@ let _slhtFieldOK   = false;
 let _slhtMaxDist   = 1;
 
 // ── Particle pool (typed arrays for GC-free operation) ────────────
-const _slhtIsMob = EARLY_IS_ANDROID || (window.innerWidth <= 768);
+const _slhtIsMob = EARLY_IS_ANDROID || FLIP_IS_MOBILE();
 const SLHT_MAX_P = EARLY_IS_ANDROID ? 550 : (_slhtIsMob ? 850 : 1350);
 const _slhtPX = new Float32Array(SLHT_MAX_P);  // position x (canvas px)
 const _slhtPY = new Float32Array(SLHT_MAX_P);  // position y
@@ -11775,7 +11834,7 @@ function _syncCamZoomUI() {
   const slider = document.getElementById('camZoomSlider');
   const val = document.getElementById('camZoomVal');
   if (!ctrl || !slider || !val) return;
-  const visible = camZoomSupported && _isCamZoomLiveContext();
+  const visible = camZoomSupported && _isCamZoomLiveContext() && (!FLIP_IS_MOBILE() || activeTab === 'cam');
   ctrl.classList.toggle('visible', visible);
   ctrl.hidden = !visible;
   ctrl.setAttribute('aria-hidden', visible ? 'false' : 'true');
@@ -11790,7 +11849,7 @@ function _syncCamMobileUtilityDock() {
   const dock = document.getElementById('camMobileUtilityDock');
   const anchor = document.getElementById('camUtilityAnchor');
   if (!dock || !anchor) return;
-  const useDock = window.innerWidth <= 767 && _getSafeActiveTab() === 'cam';
+  const useDock = FLIP_IS_MOBILE() && _getSafeActiveTab() === 'cam';
   const controls = ['camAspect', 'camFpsCtrl', 'camZoomCtrl']
     .map(id => document.getElementById(id))
     .filter(Boolean);
@@ -12024,7 +12083,7 @@ let asciiStaticSrc = null, asciiStaticW = 0, asciiStaticH = 0;
 let asciiVideoEl = null;
 let asciiUploading = false;
 let camFpsEnabled = true, camFpsTarget = 8, camLastFrameMs = 0;
-const _isMobile      = window.innerWidth <= 768 || /Mobi|Android/i.test(navigator.userAgent);
+const _isMobile      = FLIP_IS_MOBILE();
 const IS_ANDROID     = /Android/i.test(navigator.userAgent);
 const _IS_IOS        = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 const ASCII_DEV_MAX     = IS_ANDROID ? 120 : (_isMobile ? 900 : 1400);
@@ -12802,6 +12861,8 @@ function switchTab(tab) {
   document.getElementById('barEdit'  ).classList.toggle('visible', isEdit);
   document.getElementById('editHUD'  ).classList.toggle('visible', isEdit);
   document.getElementById('barStage' ).classList.toggle('visible', isStage);
+  if (window._wmpSyncHudLayout) window._wmpSyncHudLayout();
+  if (window._fusionSyncHudLayout) window._fusionSyncHudLayout();
   if (window._sfSyncHudLayout) window._sfSyncHudLayout();
   if (window._editSyncHudLayout) window._editSyncHudLayout();
   // Permission overlays live outside their areas — hide them on tab exit
@@ -12833,6 +12894,7 @@ function switchTab(tab) {
   document.body.classList.toggle('ascii-mode', isAscii);
   document.body.classList.toggle('sono-mode',  isSono);
   document.body.classList.toggle('stage-mode', isStage);
+  document.body.classList.toggle('flip-hud-tab-active', isWmp || isFusion || isSflow || isEdit);
   // Preserve the active ASCII submode after first entry; default stays classic from initial state.
   if (isAscii) _syncTypoCamUI();
 
@@ -13271,10 +13333,10 @@ function _injectFlipSettingsStyles() {
   style.id = 'flipSettingsStyle';
   style.textContent = `
     .flip-settings-trigger {
-      /* C: slot1 del riel superior derecho (top:52, right:12/18, 44x44) — ver #btnMicMobile,
+      /* C: slot1 del riel superior derecho (top:52, right seguro 12px, 44x44) — ver #btnMicMobile,
          #btnAudioIO, #btnExtCapture, que se apilan debajo en slot2/slot3. */
       position: fixed;
-      right: 12px;
+      right: calc(12px + env(safe-area-inset-right, 0px));
       top: calc(52px + env(safe-area-inset-top, 0px));
       bottom: auto;
       width: 44px;
@@ -13296,9 +13358,17 @@ function _injectFlipSettingsStyles() {
     }
     .flip-settings-trigger:active { transform: scale(0.96); }
     body.ascii-edit .flip-settings-trigger,
+    body.ascii-edit #btnAudioIO,
+    body.ascii-edit #btnMicMobile,
     body.up-edit-open .flip-settings-trigger,
+    body.up-edit-open #btnAudioIO,
+    body.up-edit-open #btnMicMobile,
     body.cam-ui-active.cam-edit-open .flip-settings-trigger,
-    body.scrash-hud-open .flip-settings-trigger {
+    body.cam-ui-active.cam-edit-open #btnAudioIO,
+    body.cam-ui-active.cam-edit-open #btnMicMobile,
+    body.scrash-hud-open .flip-settings-trigger,
+    body.scrash-hud-open #btnAudioIO,
+    body.scrash-hud-open #btnMicMobile {
       opacity: 0;
       pointer-events: none;
     }
@@ -13605,9 +13675,9 @@ function _injectFlipSettingsStyles() {
       text-align: center;
       min-height: 14px;
     }
-    @media (min-width: 768px) {
+    @media (min-width: 769px) and (min-height: 501px) {
       .flip-settings-panel { left: auto; right: 12px; width: 420px; border-radius: 18px 18px 0 0; }
-      .flip-settings-trigger { right: 18px; }
+      .flip-settings-trigger { right: calc(12px + env(safe-area-inset-right, 0px)); }
     }
   `;
   document.head.appendChild(style);
@@ -14952,7 +15022,7 @@ document.getElementById('btnAsciiEdit').addEventListener('click', () => {
 
 // Tap canvas to close edit panel (mobile UX)
 document.getElementById('asciiCanvasCol').addEventListener('click', () => {
-  if (asciiPanelOpen && window.innerWidth < 768) {
+  if (asciiPanelOpen && FLIP_IS_MOBILE()) {
     asciiPanelOpen = false;
     document.body.classList.remove('ascii-edit');
     relayout();
@@ -17471,6 +17541,15 @@ function wmpBuildGradients() {
 }
 wmpBuildGradients();
 
+// Keep the WMP canvas clear of the real HUD height (preset chips may wrap).
+window._wmpSyncHudLayout = function () {
+  const hud = document.getElementById('wmpHUD');
+  const h = (hud && hud.classList.contains('visible')) ? (hud.offsetHeight || 0) : 0;
+  document.documentElement.style.setProperty('--wmp-hud-h', h + 'px');
+  if (activeTab === 'wmp') relayout();
+};
+new ResizeObserver(() => window._wmpSyncHudLayout()).observe(document.getElementById('wmpHUD'));
+
 // ── Fog background per preset ──────────────────────────────────────────
 const WMP_FOG = [
   [0,  30,  6],   // Scope Green: dark green
@@ -17503,6 +17582,7 @@ async function wmpStopAudio() {
   if (wmpAudioCtx)  { await wmpAudioCtx.close().catch(()=>{}); wmpAudioCtx = null; }
   wmpAnalyser = null;
   document.body.classList.remove('wmp-file');
+  window._wmpSyncHudLayout();
   if (wmpFileUrl) { URL.revokeObjectURL(wmpFileUrl); wmpFileUrl = null; }
   const ppBtn = document.getElementById('btnWmpPlayPause');
   ppBtn.disabled = true; ppBtn.querySelector('.btn-icon').textContent = '▶';
@@ -18495,7 +18575,7 @@ btnWmpRec.addEventListener('click', async () => {
 // ════════════════════════════════════════════════════════════════════
 
 async function enumerateAudioDevices() {
-  if (screen.width <= 768) return;
+  if (FLIP_IS_MOBILE()) return;
   try {
     await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
   } catch(_) {}
@@ -19025,9 +19105,9 @@ let _ctxScrAudioBuf;
 
   // Resize canvas to fit area
   function _resize() {
-    // On desktop (≥769px) with sidebar layout: canvas fills the area left of the 300px sidebar.
+    // On desktop (≥769px and taller than 500px) the canvas fills the area left of the 300px sidebar.
     // --scrash-stack-bottom is irrelevant there (it reflects sidebar height, not below-canvas space).
-    const isSidebar = window.innerWidth >= 769 && document.body.classList.contains('scrash-hud-open');
+    const isSidebar = !FLIP_IS_MOBILE() && document.body.classList.contains('scrash-hud-open');
     const stackBottom = isSidebar ? 96 : (parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--scrash-stack-bottom')) || 280);
     const avH = Math.max(160, window.innerHeight - 40 - stackBottom);
     const avW = isSidebar ? window.innerWidth - 300 : window.innerWidth;
@@ -19911,7 +19991,7 @@ _primeTypoCamSoon();
 // ACTIVAR cambia de flujo según el viewport: desktop dispara startExtAudio/stopExtAudio
 // (clásico, apaga cámara); móvil delega a startMicOnly/stopMicOnly (mic conviviendo con
 // cámara, mismo flujo que el botón flotante #btnMicMobile).
-function _isMobileAudioUI() { return window.innerWidth <= 768; }
+function _isMobileAudioUI() { return FLIP_IS_MOBILE(); }
 
 function _syncExtAudioToggleUI() {
   const btn = document.getElementById('btnExtAudioToggle');
@@ -20006,7 +20086,7 @@ window._syncExtAudioToggleUI = _syncExtAudioToggleUI;
   // Hide panel and stop desktop-classic ext audio if window resizes to mobile
   // (extMicOnlyMode is left alone — mic mode is meant to survive across breakpoints).
   window.addEventListener('resize', () => {
-    if (window.innerWidth <= 768) {
+    if (FLIP_IS_MOBILE()) {
       document.getElementById('audioIOPanel').classList.remove('open');
       if (extAudioMode) stopExtAudio();
     }
@@ -20016,7 +20096,7 @@ window._syncExtAudioToggleUI = _syncExtAudioToggleUI;
   _syncExtAudioToggleUI();
 })();
 
-if (screen.width > 768) {
+if (!FLIP_IS_MOBILE()) {
   document.getElementById('btnExtCapture').addEventListener('click', async () => {
     let cvs;
     if (activeTab === 'cam') cvs = display;
@@ -21245,6 +21325,14 @@ function _fusionLoop(ts) {
       vReactEl.textContent = scrAudioReactVal + '%';
     });
   }
+
+  // Keep #fusionArea clear of the real wrapping HUD height.
+  window._fusionSyncHudLayout = function () {
+    const hud = document.getElementById('fusionHUD');
+    const h = (hud && hud.classList.contains('visible')) ? (hud.offsetHeight || 0) : 0;
+    document.documentElement.style.setProperty('--fusion-hud-h', h + 'px');
+  };
+  new ResizeObserver(() => window._fusionSyncHudLayout()).observe(document.getElementById('fusionHUD'));
 
   // ── Photo snap ────────────────────────────────────────────────────
   document.getElementById('btnFusionSnap').addEventListener('click', async () => {
@@ -22791,7 +22879,7 @@ function _flipOsShowDesktop() {
   _flipOsState.appStage?.setAttribute('aria-hidden', 'true');
 }
 function _flipOsIsMobileLayout() {
-  return window.innerWidth <= 767;
+  return FLIP_IS_MOBILE();
 }
 function _flipOsGetWindowMetrics() {
   const stage = _flipOsState.appStage;
