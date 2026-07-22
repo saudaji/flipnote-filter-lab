@@ -12750,6 +12750,7 @@ function _syncScrashHudVisibility() {
 
 function switchTab(tab) {
   if (tab === activeTab) return;
+  const wasEdit = activeTab === 'edit';
   activeTab = tab;
   _syncCamPanels();
   _syncCamThemeClasses();
@@ -12859,6 +12860,7 @@ function switchTab(tab) {
   // EDIT: own rAF loop, stop the recorder if leaving mid-take, sync layers/source/camera on entry
   editRunning = isEdit;
   if (!isEdit && typeof window._editStopRecording === 'function') window._editStopRecording();
+  if (wasEdit && !isEdit && typeof window._editOnExit === 'function') window._editOnExit();
   if (isEdit && typeof window._editOnEnter === 'function') window._editOnEnter();
 
   // STAGE: CONTROL tab only (no fullscreen/own rAF shell anymore — the
@@ -21346,6 +21348,8 @@ let editSource = { type: 'cam' };
 let editSteps = [{ engine: 'glitch', on: true, params: _editDefaultGlitchParams() }];
 let _editSrcCanvas = null;
 let _editPhotoImg = null;   // HTMLImageElement | ImageBitmap, source type:'photo'
+let _editMediaUrl = null;   // active object URL for EDIT photo fallback or video
+let _editMediaGeneration = 0;
 let _editLastFrameMs = 0;
 let _editExpandedPanel = null; // { i, kind: 'fam'|'glitch'|'ascii'|'flow' } | null — only one panel open at a time
 const EDIT_MAX_LAYERS = 4;
@@ -21400,6 +21404,21 @@ function _editClampFlowParams(p) {
 const editCanvas = document.getElementById('editCanvas');
 const ctxEdit = editCanvas.getContext('2d');
 const editVideoEl = document.getElementById('editVideoEl');
+
+function _editReleaseMedia() {
+  _editMediaGeneration++;
+  editVideoEl.pause();
+  editVideoEl.removeAttribute('src');
+  editVideoEl.load();
+  if (_editMediaUrl) {
+    URL.revokeObjectURL(_editMediaUrl);
+    _editMediaUrl = null;
+  }
+  if (_editPhotoImg && typeof _editPhotoImg.close === 'function') {
+    try { _editPhotoImg.close(); } catch (_) {}
+  }
+  _editPhotoImg = null;
+}
 
 // cover-fit draw: fills w×h cropping overflow, no stretch distortion.
 function _editDrawCover(ctx, srcEl, sw, sh, w, h) {
@@ -21778,18 +21797,21 @@ function _editLoop(ts) {
     if (sens) sens.style.display = (type === 'audio' || type === 'sono' || type === 'wmp') ? 'flex' : 'none';
   }
   document.getElementById('editSrcSono').addEventListener('click', () => {
+    _editReleaseMedia();
     editSource = { type: 'sono' };
     _editSetSourcePill('sono');
     if (!((extAudioMode || extMicOnlyMode) && extAnalyser)) flipToast('🎙 Activá EXT AUDIO o el mic para reaccionar al sonido');
     _editSyncPersisted();
   });
   document.getElementById('editSrcWmp').addEventListener('click', () => {
+    _editReleaseMedia();
     editSource = { type: 'wmp' };
     _editSetSourcePill('wmp');
     if (!((extAudioMode || extMicOnlyMode) && extAnalyser)) flipToast('🎙 Activá EXT AUDIO o el mic para reaccionar al sonido');
     _editSyncPersisted();
   });
   document.getElementById('editSrcCam').addEventListener('click', () => {
+    _editReleaseMedia();
     editSource = { type: 'cam' };
     _editSetSourcePill('cam');
     if (!stream && !extAudioMode) startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
@@ -21802,6 +21824,7 @@ function _editLoop(ts) {
     document.getElementById('editFileInput').click();
   });
   document.getElementById('editSrcAudio').addEventListener('click', () => {
+    _editReleaseMedia();
     editSource = { type: 'audio' };
     _editSetSourcePill('audio');
     if (!((extAudioMode || extMicOnlyMode) && extAnalyser)) flipToast('🎙 Activá EXT AUDIO o el mic para reaccionar al sonido');
@@ -21812,7 +21835,15 @@ function _editLoop(ts) {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    if (file.type.startsWith('image/')) {
+    const isImage = file.type.startsWith('image/');
+    const isVideo = file.type.startsWith('video/');
+    if (!isImage && !isVideo) {
+      flipToast('⚠ Archivo no soportado');
+      return;
+    }
+    _editReleaseMedia();
+    const mediaGeneration = _editMediaGeneration;
+    if (isImage) {
       try {
         let img;
         if (window.createImageBitmap) img = await createImageBitmap(file);
@@ -21820,23 +21851,35 @@ function _editLoop(ts) {
           const im = new Image();
           im.onload = () => res(im);
           im.onerror = rej;
-          im.src = URL.createObjectURL(file);
+          _editMediaUrl = URL.createObjectURL(file);
+          im.src = _editMediaUrl;
         });
+        if (mediaGeneration !== _editMediaGeneration) {
+          if (typeof img.close === 'function') img.close();
+          else img.removeAttribute('src');
+          return;
+        }
         _editPhotoImg = img;
         editSource = { type: 'photo' };
         _editSetSourcePill('photo');
         _editSyncPersisted();
-      } catch (_) { flipToast('⚠ No se pudo cargar la imagen'); }
-    } else if (file.type.startsWith('video/')) {
-      editVideoEl.pause();
-      editVideoEl.src = URL.createObjectURL(file);
+      } catch (_) {
+        if (mediaGeneration !== _editMediaGeneration) return;
+        _editReleaseMedia();
+        editSource = { type: 'cam' };
+        _editSetSourcePill('cam');
+        _editSyncPersisted();
+        flipToast('⚠ No se pudo cargar la imagen');
+      }
+    } else {
+      _editMediaUrl = URL.createObjectURL(file);
+      editVideoEl.src = _editMediaUrl;
       editVideoEl.loop = true; editVideoEl.muted = true; editVideoEl.playsInline = true;
       try { await editVideoEl.play(); } catch (_) {}
+      if (mediaGeneration !== _editMediaGeneration) return;
       editSource = { type: 'video' };
       _editSetSourcePill('video');
       _editSyncPersisted();
-    } else {
-      flipToast('⚠ Archivo no soportado');
     }
   });
 
@@ -21946,6 +21989,15 @@ function _editLoop(ts) {
 
   window._editStopRecording = function () {
     if (_edRecorder && _edRecorder.state !== 'inactive') _stopRecorderSafely(_edRecorder);
+  };
+
+  window._editOnExit = function () {
+    const releasedFileSource = editSource.type === 'photo' || editSource.type === 'video';
+    _editReleaseMedia();
+    if (releasedFileSource) {
+      editSource = { type: 'cam' };
+      _editSyncPersisted();
+    }
   };
 
   // ── Cross to STAGE control ────────────────────────────────────────────
