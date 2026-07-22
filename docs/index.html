@@ -14199,9 +14199,10 @@ function _getFlipRecorderMimeCandidates(hasAudio = false) {
   // Instagram and other apps that parse container metadata before playing.
   // Android Chrome 94+ supports video/mp4;codecs=avc1 via MediaRecorder.
   const mp4 = ['video/mp4;codecs=avc1', 'video/mp4'];
-  // iOS and Android: prefer MP4 — avoids WebM duration=0 bug on social media.
-  if (_IS_IOS || IS_ANDROID) return hasAudio ? [...mp4, ...webmAudio] : [...mp4, ...webmVideo];
-  return hasAudio ? [...webmAudio, ...mp4] : [...webmVideo, ...mp4];
+  // Prefer MP4 everywhere it is available. Modern desktop Chrome supports
+  // avc1 and writes a finite duration in the moov atom; WebM stays as the
+  // compatibility fallback and is repaired after recording below.
+  return hasAudio ? [...mp4, ...webmAudio] : [...mp4, ...webmVideo];
 }
 function _pickFlipRecorderMime(stream) {
   const hasAudio = !!(stream && stream.getAudioTracks && stream.getAudioTracks().length);
@@ -14244,6 +14245,85 @@ function _resolveRecordedMime(preferredMime, chunks = []) {
   if (preferredMime) return preferredMime;
   const chunkMime = chunks.find(chunk => chunk?.type)?.type || '';
   return chunkMime || 'video/webm';
+}
+function _readEbmlVint(bytes, offset, keepMarker = false) {
+  const first = bytes[offset];
+  if (first === undefined || first === 0) return null;
+  let length = 1, marker = 0x80;
+  while (length <= 8 && !(first & marker)) { length++; marker >>= 1; }
+  if (length > 8 || offset + length > bytes.length) return null;
+  let value = keepMarker ? first : (first & (marker - 1));
+  let unknown = !keepMarker && value === marker - 1;
+  for (let i = 1; i < length; i++) {
+    value = value * 256 + bytes[offset + i];
+    if (!keepMarker && bytes[offset + i] !== 0xff) unknown = false;
+  }
+  return { length, value, unknown };
+}
+function _writeEbmlSize(bytes, offset, length, value) {
+  const max = Math.pow(2, length * 7) - 2;
+  if (!Number.isSafeInteger(value) || value < 0 || value > max) return false;
+  for (let i = length - 1; i >= 0; i--) { bytes[offset + i] = value & 0xff; value = Math.floor(value / 256); }
+  bytes[offset] |= 1 << (8 - length);
+  return true;
+}
+function _findEbmlId(bytes, id, start = 0, end = bytes.length) {
+  outer: for (let i = start; i <= end - id.length; i++) {
+    for (let j = 0; j < id.length; j++) if (bytes[i + j] !== id[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+async function _fixWebmDuration(blob, durationMs) {
+  if (!/webm/i.test(blob?.type || '') || !Number.isFinite(durationMs) || durationMs <= 0) return blob;
+  const src = new Uint8Array(await blob.arrayBuffer());
+  const infoAt = _findEbmlId(src, [0x15, 0x49, 0xa9, 0x66]);
+  if (infoAt < 0) return blob;
+  const infoSizeAt = infoAt + 4;
+  const infoSize = _readEbmlVint(src, infoSizeAt);
+  if (!infoSize || infoSize.unknown) return blob;
+  const infoStart = infoSizeAt + infoSize.length;
+  const infoEnd = infoStart + infoSize.value;
+  if (infoEnd > src.length) return blob;
+
+  for (let at = infoStart; at < infoEnd;) {
+    const id = _readEbmlVint(src, at, true);
+    if (!id) break;
+    const size = _readEbmlVint(src, at + id.length);
+    if (!size || size.unknown) break;
+    const dataAt = at + id.length + size.length;
+    if (id.value === 0x4489 && (size.value === 4 || size.value === 8)) {
+      const out = src.slice();
+      const view = new DataView(out.buffer);
+      if (size.value === 4) view.setFloat32(dataAt, durationMs, false);
+      else view.setFloat64(dataAt, durationMs, false);
+      return new Blob([out], { type:blob.type });
+    }
+    at = dataAt + size.value;
+  }
+
+  const duration = new Uint8Array(11);
+  duration.set([0x44, 0x89, 0x88]);
+  new DataView(duration.buffer).setFloat64(3, durationMs, false);
+  const out = src.slice();
+  if (!_writeEbmlSize(out, infoSizeAt, infoSize.length, infoSize.value + duration.length)) return blob;
+  const segmentAt = _findEbmlId(out, [0x18, 0x53, 0x80, 0x67], 0, infoAt);
+  if (segmentAt >= 0) {
+    const segmentSizeAt = segmentAt + 4;
+    const segmentSize = _readEbmlVint(out, segmentSizeAt);
+    if (segmentSize && !segmentSize.unknown &&
+        !_writeEbmlSize(out, segmentSizeAt, segmentSize.length, segmentSize.value + duration.length)) return blob;
+  }
+  return new Blob([out.subarray(0, infoEnd), duration, out.subarray(infoEnd)], { type:blob.type });
+}
+async function _makeRecordedBlob(chunks, preferredMime, startedAt) {
+  const mime = _resolveRecordedMime(preferredMime, chunks);
+  let blob = new Blob(chunks, { type:mime });
+  if (/webm/i.test(mime)) {
+    try { blob = await _fixWebmDuration(blob, Math.max(1, performance.now() - startedAt)); }
+    catch (err) { console.warn('WebM duration repair failed', err); }
+  }
+  return { blob, mime:blob.type || mime };
 }
 function _getCanvasRecordAspect(sourceCanvas) {
   const srcW = Math.round(sourceCanvas?.width || sourceCanvas?.videoWidth || 0);
@@ -14358,12 +14438,15 @@ async function _createFlipRecordingJob(canvas, fps, videoBitsPerSecond, options 
   const stream = createCombinedStream(canvasCapture.stream, audioReady ? flipAudioEngine : null);
   try {
     const recState = _createFlipRecorder(stream, _getFlipVideoBitrate(videoBitsPerSecond, dims, fps));
+    let cleaned = false;
     return {
       recorder: recState.recorder,
       mime: recState.mime,
       cleanup() {
+        if (cleaned) return;
+        cleaned = true;
         canvasCapture.stop();
-        flipAudioEngine.stopAfterRecording();
+        if (!_hasActiveFlipRecording()) flipAudioEngine.stopAfterRecording();
       }
     };
   } catch (err) {
@@ -15103,6 +15186,7 @@ function _bindRecorderFinalize(rec, { addChunk, onFinalize, finalizeDelay = 120 
     scheduleFinalize(finalizeDelay);
   };
   rec.onerror = () => {
+    _stopRecorderSafely(rec);
     stopSeen = true;
     trackFinalize();
     scheduleFinalize(0);
@@ -15148,11 +15232,11 @@ async function _resolveFiniteVideoDuration(video) {
 // CAPTURE & RECORD (camera) — center button is the only action button
 // ════════════════════════════════════════════════════════════════════
 let camMode = 'foto'; // 'foto' | 'video'
-let recorder=null, recChunks=[], lastBlob=null, recMime='';
+let recorder=null, lastBlob=null, recMime='';
 const btnRec = document.getElementById('btnRecord');
 const btnCap = document.getElementById('btnCapture');
 let recTimer = null;
-let camRecordingJob = null;
+let camRecGeneration = 0;
 const _camCaptureStageCvs = document.createElement('canvas');
 const _camCaptureStageCtx = _camCaptureStageCvs.getContext('2d', { willReadFrequently:false });
 
@@ -15215,16 +15299,18 @@ function _syncCamCaptureVisual(recording = false) {
   _syncActiveNavButton('cam', 'btnCapture', 1, camMode === 'foto' ? 'SNAP' : 'REC');
   _syncActiveNavButton('cam', 'btnRecord', 0, camMode === 'foto' ? 'FOTO' : 'VIDEO');
 }
-function startRecTimer() {
+function startRecTimer(jobRecorder, token) {
   let s = 0;
-  recTimer = setInterval(() => {
+  const timer = setInterval(() => {
+    if (token !== camRecGeneration) { clearInterval(timer); return; }
     s++;
     const mm=String(s/60|0).padStart(2,'0'), ss=String(s%60).padStart(2,'0');
     btnCap.querySelector('.btn-icon').textContent = mm+':'+ss;
     if (s >= 110) btnCap.style.color = '#ff4444';
     _syncActiveNavButton('cam', 'btnCapture', 1, 'STOP');
-    if (s >= 120) { clearInterval(recTimer); _stopRecorderSafely(recorder); }
+    if (s >= 120) { clearInterval(timer); _stopRecorderSafely(jobRecorder); }
   }, 1000);
+  return timer;
 }
 function stopRecTimer() {
   clearInterval(recTimer);
@@ -15258,35 +15344,56 @@ btnCap.addEventListener('click', async () => {
       if (typeof display.captureStream !== 'function') {
         flipToast('⚠ Recording not available. Use Chrome on Android.'); return;
       }
-      recChunks=[]; lastBlob=null;
+      const token = ++camRecGeneration;
+      const chunks = [];
+      let createdJob = null;
       try {
-        camRecordingJob = await _createFlipRecordingJob(
+        createdJob = await _createFlipRecordingJob(
           display,
           camFpsEnabled ? Math.max(1, camFpsTarget) : 30,
           6_000_000,
           _getCamRecordingOptions()
         );
-        recorder = camRecordingJob.recorder;
-        recMime = camRecordingJob.mime;
-      } catch(e){ camRecordingJob = null; flipToast('⚠ Error: '+e.message);return; }
-      const releaseRecorderFinalize = _bindRecorderFinalize(recorder, {
-        addChunk: chunk => recChunks.push(chunk),
+      } catch(e){ if (token === camRecGeneration) flipToast('⚠ Error: '+e.message); return; }
+      const job = createdJob;
+      const jobRecorder = job.recorder;
+      const mime = job.mime;
+      const outputModule = camFamily === 'SLHT' ? 'slht' : 'cam';
+      if (token !== camRecGeneration) { job.cleanup(); return; }
+      recorder = jobRecorder;
+      recMime = mime;
+      lastBlob = null;
+      const startedAt = performance.now();
+      let jobTimer = null;
+      const releaseRecorderFinalize = _bindRecorderFinalize(jobRecorder, {
+        addChunk: chunk => chunks.push(chunk),
         onFinalize: async () => {
           releaseRecorderFinalize();
-          if (camRecordingJob) { camRecordingJob.cleanup(); camRecordingJob = null; }
-          stopRecTimer();
-          btnCap.classList.remove('recording'); _syncCamCaptureVisual(false);
-          recorder = null;
-          if(!recChunks.length){ flipToast('⚠ No se pudo guardar el video.'); return; }
-          recMime = _resolveRecordedMime(recMime, recChunks);
-          const ext=_videoExtFromMime(recMime);
-          lastBlob=new Blob(recChunks,{type:recMime});
-          await saveBlob(lastBlob, _flipName(camFamily === 'SLHT' ? 'slht' : 'cam', ext));
+          job.cleanup();
+          clearInterval(jobTimer);
+          if (token === camRecGeneration) {
+            recorder = null;
+            recTimer = null;
+            btnCap.style.color = '';
+            btnCap.classList.remove('recording');
+            _syncCamCaptureVisual(false);
+          }
+          if (!chunks.length) {
+            if (token === camRecGeneration) flipToast('⚠ No se pudo guardar el video.');
+            return;
+          }
+          const result = await _makeRecordedBlob(chunks, mime, startedAt);
+          if (token === camRecGeneration) {
+            recMime = result.mime;
+            lastBlob = result.blob;
+          }
+          await saveBlob(result.blob, _flipName(outputModule, _videoExtFromMime(result.mime)));
         }
       });
-      recorder.start(250);
+      jobRecorder.start(250);
       _syncCamCaptureVisual(true);
-      startRecTimer();
+      jobTimer = startRecTimer(jobRecorder, token);
+      recTimer = jobTimer;
       btnCap.classList.add('recording');
     } else {
       _stopRecorderSafely(recorder); stopRecTimer();
@@ -15588,6 +15695,7 @@ document.getElementById('btnVidExport').addEventListener('click', async () => {
     return;
   }
   _vidExportChunks = [];
+  const startedAt = performance.now();
   const releaseExportFinalize = _bindRecorderFinalize(_vidExportRec, {
     addChunk: chunk => _vidExportChunks.push(chunk),
     onFinalize: async () => {
@@ -15604,10 +15712,9 @@ document.getElementById('btnVidExport').addEventListener('click', async () => {
       uploadProcessing = false;
       setProgress(100, '✓ Listo'); setTimeout(() => showProgress(false), 1500);
       if (!_vidExportChunks.length) { flipToast('⚠️ No se grabó ningún frame.'); return; }
-      mime = _resolveRecordedMime(mime, _vidExportChunks);
-      const ext = _videoExtFromMime(mime);
-      const blob = new Blob(_vidExportChunks, { type: mime });
-      setUploadResultReady(blob, ext);
+      const result = await _makeRecordedBlob(_vidExportChunks, mime, startedAt);
+      mime = result.mime;
+      setUploadResultReady(result.blob, _videoExtFromMime(result.mime));
     }
   });
   uploadProcessing = true;
@@ -15686,48 +15793,64 @@ document.getElementById('btnAsciiCapture').addEventListener('click', async () =>
     // Toggle video recording
     const asciiCapBtn = document.getElementById('btnAsciiCapture');
     if (!asciiRecorder || asciiRecorder.state === 'inactive') {
-      asciiRecChunks = [];
+      const token = ++asciiRecGeneration;
+      const chunks = [];
       asciiRecordingHighQuality = true;
       _asciiAdaptiveFpsCap = 0;
       _asciiFpsHist = [];
       _asciiLastFT = 0;
-      let asciiRecordingJob = null;
+      let createdJob = null;
       try {
-        asciiRecordingJob = await _createFlipRecordingJob(asciiCvs, 30, 6_000_000, _getAsciiRecordingOptions());
-        asciiRecorder = asciiRecordingJob.recorder;
-        asciiRecMime = asciiRecordingJob.mime;
+        createdJob = await _createFlipRecordingJob(asciiCvs, 30, 6_000_000, _getAsciiRecordingOptions());
       } catch (e) {
-        asciiRecordingHighQuality = false;
-        if (asciiRecordingJob) asciiRecordingJob.cleanup();
-        flipToast('⚠ Error: ' + e.message);
+        if (token === asciiRecGeneration) {
+          asciiRecordingHighQuality = false;
+          flipToast('⚠ Error: ' + e.message);
+        }
         return;
       }
-      let asciiRecTimer = null;
-      const releaseAsciiFinalize = _bindRecorderFinalize(asciiRecorder, {
-        addChunk: chunk => asciiRecChunks.push(chunk),
+      const job = createdJob;
+      const jobRecorder = job.recorder;
+      const mime = job.mime;
+      if (token !== asciiRecGeneration) { job.cleanup(); return; }
+      asciiRecorder = jobRecorder;
+      asciiRecMime = mime;
+      const startedAt = performance.now();
+      let jobTimer = null;
+      const releaseAsciiFinalize = _bindRecorderFinalize(jobRecorder, {
+        addChunk: chunk => chunks.push(chunk),
         onFinalize: async () => {
           releaseAsciiFinalize();
-          asciiRecordingHighQuality = false;
-          if (asciiRecordingJob) { asciiRecordingJob.cleanup(); asciiRecordingJob = null; }
-          asciiRecorder = null;
-          clearInterval(asciiRecTimer); asciiCapBtn.style.color = '';
-          asciiCapBtn.classList.remove('recording'); _syncAsciiCaptureVisual(false);
-          if (!asciiRecChunks.length) { flipToast('⚠ No se pudo guardar el video ASCII.'); return; }
-          asciiRecMime = _resolveRecordedMime(asciiRecMime, asciiRecChunks);
-          const ext = _videoExtFromMime(asciiRecMime);
-          const blob = new Blob(asciiRecChunks, { type: asciiRecMime });
-          await saveBlob(blob, _flipName('ascii', ext));
+          job.cleanup();
+          clearInterval(jobTimer);
+          if (token === asciiRecGeneration) {
+            asciiRecordingHighQuality = false;
+            asciiRecorder = null;
+            asciiCapBtn.style.color = '';
+            asciiCapBtn.classList.remove('recording');
+            _syncAsciiCaptureVisual(false);
+          }
+          if (!chunks.length) {
+            if (token === asciiRecGeneration) flipToast('⚠ No se pudo guardar el video ASCII.');
+            return;
+          }
+          const result = await _makeRecordedBlob(chunks, mime, startedAt);
+          if (token === asciiRecGeneration) {
+            asciiRecMime = result.mime;
+          }
+          await saveBlob(result.blob, _flipName('ascii', _videoExtFromMime(result.mime)));
         }
       });
-      asciiRecorder.start(250);
+      jobRecorder.start(250);
       let asciiS = 0;
-      asciiRecTimer = setInterval(() => {
+      jobTimer = setInterval(() => {
+        if (token !== asciiRecGeneration) { clearInterval(jobTimer); return; }
         asciiS++;
         const mm=String(asciiS/60|0).padStart(2,'0'), ss=String(asciiS%60).padStart(2,'0');
         asciiCapBtn.querySelector('.btn-icon').textContent = mm+':'+ss;
         if (asciiS >= 110) asciiCapBtn.style.color = '#ff4444';
         _syncActiveNavButton('ascii', 'btnAsciiCapture', 1, 'STOP');
-        if (asciiS >= 120) { clearInterval(asciiRecTimer); asciiRecordingHighQuality = false; _stopRecorderSafely(asciiRecorder); }
+        if (asciiS >= 120) { clearInterval(jobTimer); asciiRecordingHighQuality = false; _stopRecorderSafely(jobRecorder); }
       }, 1000);
       asciiCapBtn.classList.add('recording'); _syncAsciiCaptureVisual(true);
     } else {
@@ -15942,8 +16065,9 @@ document.getElementById('upBtnReset').addEventListener('click', () => {
 
 // ── ASCII FOTO/VIDEO MODE TOGGLE ──────────────────────────────────────
 let asciiCamMode = 'foto'; // 'foto' | 'video'
-let asciiRecorder = null, asciiRecChunks = [], asciiRecMime = '';
+let asciiRecorder = null, asciiRecMime = '';
 let asciiRecordingHighQuality = false;
+let asciiRecGeneration = 0;
 
 // Left button: mode toggle only (no recording)
 function _syncAsciiCaptureVisual(recording = false) {
@@ -16330,9 +16454,8 @@ let sonoAnalyser   = null;
 let sonoT          = 0;
 let sonoLastRAF    = 0;
 let sonoLastBlob   = null;
-let sonoRecorder   = null, sonoRecChunks = [], sonoRecMime = '';
+let sonoRecorder   = null, sonoRecMime = '', sonoRecGeneration = 0;
 let sonoRecTimer   = null;
-let sonoRecordingJob = null;
 let sonoMixVal     = 0;   // 0=all BLEND, 100=full BLEND
 let sonoChaosVal   = 0;
 let sonoPreset     = 0;   // 0=SONO 1=SCOPE
@@ -17138,15 +17261,18 @@ btnSonoRec.addEventListener('click', async () => {
     if (typeof sonoCvs.captureStream !== 'function') {
       flipToast('⚠ Recording not available. Use Chrome on Android.'); return;
     }
-    sonoRecChunks = []; sonoLastBlob = null;
+    const token = ++sonoRecGeneration;
+    const chunks = [];
+    sonoLastBlob = null;
 
     const sonoCanvasCapture = _createRecordingCanvasStream(sonoCvs, 30, {});
     let sonoRecStream = sonoCanvasCapture.stream;
     let sonoAudioDest = null;
+    let sonoRecordingNode = null;
     if (sonoAudioCtx && sonoAudioCtx.state !== 'closed') {
       sonoAudioDest = sonoAudioCtx.createMediaStreamDestination();
-      if (sonoAudioSrcNode) sonoAudioSrcNode.connect(sonoAudioDest);
-      else if (sonoAnalyser) sonoAnalyser.connect(sonoAudioDest);
+      sonoRecordingNode = sonoAudioSrcNode || sonoAnalyser;
+      if (sonoRecordingNode) sonoRecordingNode.connect(sonoAudioDest);
       const audioTracks = sonoAudioDest.stream.getAudioTracks();
       if (audioTracks.length) sonoRecStream = new MediaStream([...sonoCanvasCapture.stream.getVideoTracks(), ...audioTracks]);
     }
@@ -17154,42 +17280,64 @@ btnSonoRec.addEventListener('click', async () => {
     const sonoRecOpts = { videoBitsPerSecond: 6_000_000 };
     if (sonoMime) sonoRecOpts.mimeType = sonoMime;
     if (sonoRecStream.getAudioTracks().length) sonoRecOpts.audioBitsPerSecond = 128_000;
+    let createdRecorder = null;
     try {
-      sonoRecorder = _trackFlipRecorder(new MediaRecorder(sonoRecStream, sonoRecOpts));
-      sonoRecMime = sonoRecorder.mimeType || sonoMime || '';
+      createdRecorder = _trackFlipRecorder(new MediaRecorder(sonoRecStream, sonoRecOpts));
     } catch(e) {
       sonoCanvasCapture.stop();
       flipToast('⚠ Error: ' + e.message); return;
     }
-
-    const releaseSonoFinalize = _bindRecorderFinalize(sonoRecorder, {
-      addChunk: chunk => sonoRecChunks.push(chunk),
+    const job = {
+      recorder:createdRecorder,
+      mime:createdRecorder.mimeType || sonoMime || '',
+      cleanup() {
+        sonoCanvasCapture.stop();
+        if (sonoAudioDest && sonoRecordingNode) { try { sonoRecordingNode.disconnect(sonoAudioDest); } catch(_){} }
+      }
+    };
+    const jobRecorder = job.recorder;
+    const mime = job.mime;
+    sonoRecorder = jobRecorder;
+    sonoRecMime = mime;
+    const startedAt = performance.now();
+    let jobTimer = null;
+    const releaseSonoFinalize = _bindRecorderFinalize(jobRecorder, {
+      addChunk: chunk => chunks.push(chunk),
       onFinalize: async () => {
         releaseSonoFinalize();
-        sonoCanvasCapture.stop();
-        if (sonoAudioDest && sonoAudioSrcNode) { try { sonoAudioSrcNode.disconnect(sonoAudioDest); } catch(_){} }
-        if (sonoAudioDest && sonoAnalyser)     { try { sonoAnalyser.disconnect(sonoAudioDest);     } catch(_){} }
-        sonoRecorder = null;
-        clearInterval(sonoRecTimer); btnSonoRec.style.color = '';
-        btnSonoRec.querySelector('.btn-label').textContent = 'REC';
-        btnSonoRec.classList.remove('recording');
-        btnSonoRec.querySelector('.btn-icon').textContent = '⏺';
-        if (!sonoRecChunks.length) { flipToast('⚠ No se pudo guardar el video SONO.'); return; }
-        sonoRecMime = _resolveRecordedMime(sonoRecMime, sonoRecChunks);
-        const ext = _videoExtFromMime(sonoRecMime);
-        sonoLastBlob = new Blob(sonoRecChunks, { type: sonoRecMime });
-        await saveBlob(sonoLastBlob, _flipName('sono', ext));
+        job.cleanup();
+        clearInterval(jobTimer);
+        if (token === sonoRecGeneration) {
+          sonoRecorder = null;
+          sonoRecTimer = null;
+          btnSonoRec.style.color = '';
+          btnSonoRec.querySelector('.btn-label').textContent = 'REC';
+          btnSonoRec.classList.remove('recording');
+          btnSonoRec.querySelector('.btn-icon').textContent = '⏺';
+        }
+        if (!chunks.length) {
+          if (token === sonoRecGeneration) flipToast('⚠ No se pudo guardar el video SONO.');
+          return;
+        }
+        const result = await _makeRecordedBlob(chunks, mime, startedAt);
+        if (token === sonoRecGeneration) {
+          sonoRecMime = result.mime;
+          sonoLastBlob = result.blob;
+        }
+        await saveBlob(result.blob, _flipName('sono', _videoExtFromMime(result.mime)));
       }
     });
-    sonoRecorder.start(250);
+    jobRecorder.start(250);
     let sonoS = 0;
-    sonoRecTimer = setInterval(() => {
+    jobTimer = setInterval(() => {
+      if (token !== sonoRecGeneration) { clearInterval(jobTimer); return; }
       sonoS++;
       const mm = String(sonoS/60|0).padStart(2,'0'), ss = String(sonoS%60).padStart(2,'0');
       btnSonoRec.querySelector('.btn-label').textContent = mm + ':' + ss;
       if (sonoS >= 110) btnSonoRec.style.color = '#ff4444';
-      if (sonoS >= 120) { clearInterval(sonoRecTimer); _stopRecorderSafely(sonoRecorder); }
+      if (sonoS >= 120) { clearInterval(jobTimer); _stopRecorderSafely(jobRecorder); }
     }, 1000);
+    sonoRecTimer = jobTimer;
     btnSonoRec.classList.add('recording');
     btnSonoRec.querySelector('.btn-icon').textContent = '⏹';
   } else {
@@ -18155,7 +18303,7 @@ document.addEventListener('webkitfullscreenchange', () => {
 // ════════════════════════════════════════════════════════════════════
 // WMP CAPTURE & REC
 // ════════════════════════════════════════════════════════════════════
-let wmpRecorder = null, wmpRecChunks = [], wmpRecMime = '', wmpRecTimer = null;
+let wmpRecorder = null, wmpRecMime = '', wmpRecTimer = null, wmpRecGeneration = 0;
 let wmpLastBlob = null;
 
 document.getElementById('btnWmpCapture').addEventListener('click', async () => {
@@ -18169,15 +18317,18 @@ btnWmpRec.addEventListener('click', async () => {
     if (typeof wmpCvs.captureStream !== 'function') {
       flipToast('⚠ Recording not available. Use Chrome on Android.'); return;
     }
-    wmpRecChunks = []; wmpLastBlob = null;
+    const token = ++wmpRecGeneration;
+    const chunks = [];
+    wmpLastBlob = null;
 
     const wmpCanvasCapture = _createRecordingCanvasStream(wmpCvs, 30, {});
     let wmpRecStream = wmpCanvasCapture.stream;
     let wmpAudioDest = null;
+    let wmpRecordingNode = null;
     if (wmpAudioCtx && wmpAudioCtx.state !== 'closed') {
       wmpAudioDest = wmpAudioCtx.createMediaStreamDestination();
-      if (wmpAudioSrc) wmpAudioSrc.connect(wmpAudioDest);
-      else if (wmpAnalyser) wmpAnalyser.connect(wmpAudioDest);
+      wmpRecordingNode = wmpAudioSrc || wmpAnalyser;
+      if (wmpRecordingNode) wmpRecordingNode.connect(wmpAudioDest);
       const audioTracks = wmpAudioDest.stream.getAudioTracks();
       if (audioTracks.length) wmpRecStream = new MediaStream([...wmpCanvasCapture.stream.getVideoTracks(), ...audioTracks]);
     }
@@ -18185,42 +18336,64 @@ btnWmpRec.addEventListener('click', async () => {
     const wmpRecOpts = { videoBitsPerSecond: 6_000_000 };
     if (wmpMime) wmpRecOpts.mimeType = wmpMime;
     if (wmpRecStream.getAudioTracks().length) wmpRecOpts.audioBitsPerSecond = 128_000;
+    let createdRecorder = null;
     try {
-      wmpRecorder = _trackFlipRecorder(new MediaRecorder(wmpRecStream, wmpRecOpts));
-      wmpRecMime = wmpRecorder.mimeType || wmpMime || '';
+      createdRecorder = _trackFlipRecorder(new MediaRecorder(wmpRecStream, wmpRecOpts));
     } catch(e) {
       wmpCanvasCapture.stop();
       flipToast('⚠ Error: ' + e.message); return;
     }
-
-    const releaseWmpFinalize = _bindRecorderFinalize(wmpRecorder, {
-      addChunk: chunk => wmpRecChunks.push(chunk),
+    const job = {
+      recorder:createdRecorder,
+      mime:createdRecorder.mimeType || wmpMime || '',
+      cleanup() {
+        wmpCanvasCapture.stop();
+        if (wmpAudioDest && wmpRecordingNode) { try { wmpRecordingNode.disconnect(wmpAudioDest); } catch(_){} }
+      }
+    };
+    const jobRecorder = job.recorder;
+    const mime = job.mime;
+    wmpRecorder = jobRecorder;
+    wmpRecMime = mime;
+    const startedAt = performance.now();
+    let jobTimer = null;
+    const releaseWmpFinalize = _bindRecorderFinalize(jobRecorder, {
+      addChunk: chunk => chunks.push(chunk),
       onFinalize: async () => {
         releaseWmpFinalize();
-        wmpCanvasCapture.stop();
-        if (wmpAudioDest && wmpAudioSrc)   { try { wmpAudioSrc.disconnect(wmpAudioDest);   } catch(_){} }
-        if (wmpAudioDest && wmpAnalyser)   { try { wmpAnalyser.disconnect(wmpAudioDest);   } catch(_){} }
-        wmpRecorder = null;
-        clearInterval(wmpRecTimer); btnWmpRec.style.color = '';
-        btnWmpRec.querySelector('.btn-label').textContent = 'REC';
-        btnWmpRec.classList.remove('recording');
-        btnWmpRec.querySelector('.btn-icon').textContent = '⏺';
-        if (!wmpRecChunks.length) { flipToast('⚠ No se pudo guardar el video WMP.'); return; }
-        wmpRecMime = _resolveRecordedMime(wmpRecMime, wmpRecChunks);
-        const ext = _videoExtFromMime(wmpRecMime);
-        wmpLastBlob = new Blob(wmpRecChunks, { type: wmpRecMime });
-        await saveBlob(wmpLastBlob, _flipName('wmp', ext));
+        job.cleanup();
+        clearInterval(jobTimer);
+        if (token === wmpRecGeneration) {
+          wmpRecorder = null;
+          wmpRecTimer = null;
+          btnWmpRec.style.color = '';
+          btnWmpRec.querySelector('.btn-label').textContent = 'REC';
+          btnWmpRec.classList.remove('recording');
+          btnWmpRec.querySelector('.btn-icon').textContent = '⏺';
+        }
+        if (!chunks.length) {
+          if (token === wmpRecGeneration) flipToast('⚠ No se pudo guardar el video WMP.');
+          return;
+        }
+        const result = await _makeRecordedBlob(chunks, mime, startedAt);
+        if (token === wmpRecGeneration) {
+          wmpRecMime = result.mime;
+          wmpLastBlob = result.blob;
+        }
+        await saveBlob(result.blob, _flipName('wmp', _videoExtFromMime(result.mime)));
       }
     });
-    wmpRecorder.start(250);
+    jobRecorder.start(250);
     let wmpS = 0;
-    wmpRecTimer = setInterval(() => {
+    jobTimer = setInterval(() => {
+      if (token !== wmpRecGeneration) { clearInterval(jobTimer); return; }
       wmpS++;
       const mm = String(wmpS/60|0).padStart(2,'0'), ss = String(wmpS%60).padStart(2,'0');
       btnWmpRec.querySelector('.btn-label').textContent = mm + ':' + ss;
       if (wmpS >= 110) btnWmpRec.style.color = '#ff4444';
-      if (wmpS >= 120) { clearInterval(wmpRecTimer); _stopRecorderSafely(wmpRecorder); }
+      if (wmpS >= 120) { clearInterval(jobTimer); _stopRecorderSafely(jobRecorder); }
     }, 1000);
+    wmpRecTimer = jobTimer;
     btnWmpRec.classList.add('recording');
     btnWmpRec.querySelector('.btn-icon').textContent = '⏹';
   } else {
@@ -18745,7 +18918,7 @@ function _scrQuantize(r, g, b) {
 let scrAnimateOn = false, scrSpeedVal = 5;
 let scrashRunning = false;
 let scrashCamMode = 'foto'; // 'foto' | 'video'
-let scrashRecorder = null, scrashRecChunks = [], scrashRecMime = '';
+let scrashRecorder = null, scrashRecMime = '', scrashRecGeneration = 0;
 let _scrRafId = null, _scrStartT = null;
 
 const scrashCvs = document.getElementById('scrashCanvas');
@@ -18877,43 +19050,54 @@ let _ctxScrAudioBuf;
       await saveBlob(await _canvasToJpeg(scrashCvs), _flipName('glitch', 'jpg'));
     } else {
       if (!scrashRecorder || scrashRecorder.state === 'inactive') {
-        const _chunks = []; scrashRecChunks = _chunks;
-        let scrashRecordingJob = null;
+        const token = ++scrashRecGeneration;
+        const chunks = [];
+        let createdJob = null;
         try {
-          scrashRecordingJob = await _createFlipRecordingJob(scrashCvs, 30, 6_000_000);
-          scrashRecorder = scrashRecordingJob.recorder;
-          scrashRecMime = scrashRecordingJob.mime;
+          createdJob = await _createFlipRecordingJob(scrashCvs, 30, 6_000_000);
         } catch (e) {
-          if (scrashRecordingJob) scrashRecordingJob.cleanup();
-          flipToast('⚠ Error: ' + e.message);
+          if (token === scrashRecGeneration) flipToast('⚠ Error: ' + e.message);
           return;
         }
-        let scrashRecTimer = null;
-        const releaseScrashFinalize = _bindRecorderFinalize(scrashRecorder, {
-          addChunk: chunk => _chunks.push(chunk),
+        const job = createdJob;
+        const jobRecorder = job.recorder;
+        const mime = job.mime;
+        if (token !== scrashRecGeneration) { job.cleanup(); return; }
+        scrashRecorder = jobRecorder;
+        scrashRecMime = mime;
+        const startedAt = performance.now();
+        let jobTimer = null;
+        const releaseScrashFinalize = _bindRecorderFinalize(jobRecorder, {
+          addChunk: chunk => chunks.push(chunk),
           onFinalize: async () => {
             releaseScrashFinalize();
-            if (scrashRecordingJob) { scrashRecordingJob.cleanup(); scrashRecordingJob = null; }
-            scrashRecorder = null;
-            clearInterval(scrashRecTimer); snapBtn.style.color = '';
-            snapBtn.classList.remove('recording');
-            _syncScrashCaptureVisual(false);
-            if (!_chunks.length) { flipToast('⚠ No se pudo guardar el video GLITCH.'); return; }
-            scrashRecMime = _resolveRecordedMime(scrashRecMime, _chunks);
-            const ext = _videoExtFromMime(scrashRecMime);
-            const blob = new Blob(_chunks, { type: scrashRecMime });
-            await saveBlob(blob, _flipName('glitch', ext));
+            job.cleanup();
+            clearInterval(jobTimer);
+            if (token === scrashRecGeneration) {
+              scrashRecorder = null;
+              snapBtn.style.color = '';
+              snapBtn.classList.remove('recording');
+              _syncScrashCaptureVisual(false);
+            }
+            if (!chunks.length) {
+              if (token === scrashRecGeneration) flipToast('⚠ No se pudo guardar el video GLITCH.');
+              return;
+            }
+            const result = await _makeRecordedBlob(chunks, mime, startedAt);
+            if (token === scrashRecGeneration) scrashRecMime = result.mime;
+            await saveBlob(result.blob, _flipName('glitch', _videoExtFromMime(result.mime)));
           }
         });
-        scrashRecorder.start(250);
+        jobRecorder.start(250);
         let scrashS = 0;
-        scrashRecTimer = setInterval(() => {
+        jobTimer = setInterval(() => {
+          if (token !== scrashRecGeneration) { clearInterval(jobTimer); return; }
           scrashS++;
           const mm=String(scrashS/60|0).padStart(2,'0'), ss=String(scrashS%60).padStart(2,'0');
           snapBtn.querySelector('.btn-icon').textContent = mm+':'+ss;
           if (scrashS >= 110) snapBtn.style.color = '#ff4444';
           _syncActiveNavButton('scrash', 'btnScrashSnap', 1, 'STOP');
-          if (scrashS >= 120) { clearInterval(scrashRecTimer); _stopRecorderSafely(scrashRecorder); }
+          if (scrashS >= 120) { clearInterval(jobTimer); _stopRecorderSafely(jobRecorder); }
         }, 1000);
         snapBtn.classList.add('recording');
         _syncScrashCaptureVisual(true);
@@ -20733,7 +20917,7 @@ if (screen.width > 768) {
   });
 
   // ── Video record ────────────────────────────────────────────────────
-  let _sfRecorder = null, _sfRecChunks = [], _sfRecMime = '', _sfRecTimer = null, _sfRecJob = null;
+  let _sfRecorder = null, _sfRecMime = '', _sfRecTimer = null, _sfRecGeneration = 0;
   const btnSflowRec = document.getElementById('btnSflowRec');
   const _sfRecResetUI = () => {
     clearInterval(_sfRecTimer); btnSflowRec.style.color = '';
@@ -20744,37 +20928,54 @@ if (screen.width > 768) {
   btnSflowRec.addEventListener('click', async () => {
     if (_sfRecorder && _sfRecorder.state !== 'inactive') { _stopRecorderSafely(_sfRecorder); return; }
     if (!_sfActive) { flipToast('⚠ Enciende la cámara primero (CAM)'); return; }
-    _sfRecChunks = [];
+    const token = ++_sfRecGeneration;
+    const chunks = [];
+    let createdJob = null;
     try {
-      _sfRecJob = await _createFlipRecordingJob(sfCanvas, 30, 6_000_000, {});
-      _sfRecorder = _sfRecJob.recorder;
-      _sfRecMime = _sfRecJob.mime;
+      createdJob = await _createFlipRecordingJob(sfCanvas, 30, 6_000_000, {});
     } catch (e) {
-      if (_sfRecJob) { _sfRecJob.cleanup(); _sfRecJob = null; }
-      flipToast('⚠ Error: ' + e.message); return;
+      if (token === _sfRecGeneration) flipToast('⚠ Error: ' + e.message);
+      return;
     }
-    const releaseSfFinalize = _bindRecorderFinalize(_sfRecorder, {
-      addChunk: chunk => _sfRecChunks.push(chunk),
+    const job = createdJob;
+    const jobRecorder = job.recorder;
+    const mime = job.mime;
+    if (token !== _sfRecGeneration) { job.cleanup(); return; }
+    _sfRecorder = jobRecorder;
+    _sfRecMime = mime;
+    const startedAt = performance.now();
+    let jobTimer = null;
+    const releaseSfFinalize = _bindRecorderFinalize(jobRecorder, {
+      addChunk: chunk => chunks.push(chunk),
       onFinalize: async () => {
         releaseSfFinalize();
-        if (_sfRecJob) { _sfRecJob.cleanup(); _sfRecJob = null; }
-        _sfRecorder = null;
-        _sfRecResetUI();
-        if (!_sfRecChunks.length) { flipToast('⚠ No se pudo guardar el video FLOW.'); return; }
-        _sfRecMime = _resolveRecordedMime(_sfRecMime, _sfRecChunks);
-        const blob = new Blob(_sfRecChunks, { type: _sfRecMime });
-        await saveBlob(blob, _flipName('flow', _videoExtFromMime(_sfRecMime)));
+        job.cleanup();
+        clearInterval(jobTimer);
+        if (token === _sfRecGeneration) {
+          _sfRecorder = null;
+          _sfRecTimer = null;
+          _sfRecResetUI();
+        }
+        if (!chunks.length) {
+          if (token === _sfRecGeneration) flipToast('⚠ No se pudo guardar el video FLOW.');
+          return;
+        }
+        const result = await _makeRecordedBlob(chunks, mime, startedAt);
+        if (token === _sfRecGeneration) _sfRecMime = result.mime;
+        await saveBlob(result.blob, _flipName('flow', _videoExtFromMime(result.mime)));
       }
     });
-    _sfRecorder.start(250);
+    jobRecorder.start(250);
     let sfS = 0;
-    _sfRecTimer = setInterval(() => {
+    jobTimer = setInterval(() => {
+      if (token !== _sfRecGeneration) { clearInterval(jobTimer); return; }
       sfS++;
       const mm = String(sfS/60|0).padStart(2,'0'), ss = String(sfS%60).padStart(2,'0');
       btnSflowRec.querySelector('.btn-label').textContent = mm + ':' + ss;
       if (sfS >= 110) btnSflowRec.style.color = '#ff4444';
-      if (sfS >= 120) { clearInterval(_sfRecTimer); _stopRecorderSafely(_sfRecorder); }
+      if (sfS >= 120) { clearInterval(jobTimer); _stopRecorderSafely(jobRecorder); }
     }, 1000);
+    _sfRecTimer = jobTimer;
     btnSflowRec.classList.add('recording');
     btnSflowRec.querySelector('.btn-icon').textContent = '⏹';
   });
@@ -20902,7 +21103,7 @@ function _fusionLoop(ts) {
   });
 
   // ── Video record — pattern copied from FLOW's btnSflowRec ──────────
-  let _fuRecorder = null, _fuRecChunks = [], _fuRecMime = '', _fuRecTimer = null, _fuRecJob = null;
+  let _fuRecorder = null, _fuRecMime = '', _fuRecTimer = null, _fuRecGeneration = 0;
   const btnFusionRec = document.getElementById('btnFusionRec');
   const _fuRecResetUI = () => {
     clearInterval(_fuRecTimer); btnFusionRec.style.color = '';
@@ -20913,37 +21114,54 @@ function _fusionLoop(ts) {
   btnFusionRec.addEventListener('click', async () => {
     if (_fuRecorder && _fuRecorder.state !== 'inactive') { _stopRecorderSafely(_fuRecorder); return; }
     if (!fusionRunning) { flipToast('⚠ Enciende la cámara primero'); return; }
-    _fuRecChunks = [];
+    const token = ++_fuRecGeneration;
+    const chunks = [];
+    let createdJob = null;
     try {
-      _fuRecJob = await _createFlipRecordingJob(fusionCanvas, 30, 6_000_000, {});
-      _fuRecorder = _fuRecJob.recorder;
-      _fuRecMime = _fuRecJob.mime;
+      createdJob = await _createFlipRecordingJob(fusionCanvas, 30, 6_000_000, {});
     } catch (e) {
-      if (_fuRecJob) { _fuRecJob.cleanup(); _fuRecJob = null; }
-      flipToast('⚠ Error: ' + e.message); return;
+      if (token === _fuRecGeneration) flipToast('⚠ Error: ' + e.message);
+      return;
     }
-    const releaseFuFinalize = _bindRecorderFinalize(_fuRecorder, {
-      addChunk: chunk => _fuRecChunks.push(chunk),
+    const job = createdJob;
+    const jobRecorder = job.recorder;
+    const mime = job.mime;
+    if (token !== _fuRecGeneration) { job.cleanup(); return; }
+    _fuRecorder = jobRecorder;
+    _fuRecMime = mime;
+    const startedAt = performance.now();
+    let jobTimer = null;
+    const releaseFuFinalize = _bindRecorderFinalize(jobRecorder, {
+      addChunk: chunk => chunks.push(chunk),
       onFinalize: async () => {
         releaseFuFinalize();
-        if (_fuRecJob) { _fuRecJob.cleanup(); _fuRecJob = null; }
-        _fuRecorder = null;
-        _fuRecResetUI();
-        if (!_fuRecChunks.length) { flipToast('⚠ No se pudo guardar el video FUSION.'); return; }
-        _fuRecMime = _resolveRecordedMime(_fuRecMime, _fuRecChunks);
-        const blob = new Blob(_fuRecChunks, { type: _fuRecMime });
-        await saveBlob(blob, _flipName('fusion', _videoExtFromMime(_fuRecMime)));
+        job.cleanup();
+        clearInterval(jobTimer);
+        if (token === _fuRecGeneration) {
+          _fuRecorder = null;
+          _fuRecTimer = null;
+          _fuRecResetUI();
+        }
+        if (!chunks.length) {
+          if (token === _fuRecGeneration) flipToast('⚠ No se pudo guardar el video FUSION.');
+          return;
+        }
+        const result = await _makeRecordedBlob(chunks, mime, startedAt);
+        if (token === _fuRecGeneration) _fuRecMime = result.mime;
+        await saveBlob(result.blob, _flipName('fusion', _videoExtFromMime(result.mime)));
       }
     });
-    _fuRecorder.start(250);
+    jobRecorder.start(250);
     let fuS = 0;
-    _fuRecTimer = setInterval(() => {
+    jobTimer = setInterval(() => {
+      if (token !== _fuRecGeneration) { clearInterval(jobTimer); return; }
       fuS++;
       const mm = String(fuS/60|0).padStart(2,'0'), ss = String(fuS%60).padStart(2,'0');
       btnFusionRec.querySelector('.btn-label').textContent = mm + ':' + ss;
       if (fuS >= 110) btnFusionRec.style.color = '#ff4444';
-      if (fuS >= 120) { clearInterval(_fuRecTimer); _stopRecorderSafely(_fuRecorder); }
+      if (fuS >= 120) { clearInterval(jobTimer); _stopRecorderSafely(jobRecorder); }
     }, 1000);
+    _fuRecTimer = jobTimer;
     btnFusionRec.classList.add('recording');
     btnFusionRec.querySelector('.btn-icon').textContent = '⏹';
   });
@@ -21516,7 +21734,7 @@ function _editLoop(ts) {
   });
 
   // ── Video record — pattern copied from FUSION/FLOW's recorder flow ───
-  let _edRecorder = null, _edRecChunks = [], _edRecMime = '', _edRecTimer = null, _edRecJob = null;
+  let _edRecorder = null, _edRecMime = '', _edRecTimer = null, _edRecGeneration = 0;
   const btnEditRec = document.getElementById('btnEditRec');
   const _edRecResetUI = () => {
     clearInterval(_edRecTimer); btnEditRec.style.color = '';
@@ -21526,37 +21744,54 @@ function _editLoop(ts) {
   };
   btnEditRec.addEventListener('click', async () => {
     if (_edRecorder && _edRecorder.state !== 'inactive') { _stopRecorderSafely(_edRecorder); return; }
-    _edRecChunks = [];
+    const token = ++_edRecGeneration;
+    const chunks = [];
+    let createdJob = null;
     try {
-      _edRecJob = await _createFlipRecordingJob(editCanvas, 30, 6_000_000, {});
-      _edRecorder = _edRecJob.recorder;
-      _edRecMime = _edRecJob.mime;
+      createdJob = await _createFlipRecordingJob(editCanvas, 30, 6_000_000, {});
     } catch (e) {
-      if (_edRecJob) { _edRecJob.cleanup(); _edRecJob = null; }
-      flipToast('⚠ Error: ' + e.message); return;
+      if (token === _edRecGeneration) flipToast('⚠ Error: ' + e.message);
+      return;
     }
-    const releaseEdFinalize = _bindRecorderFinalize(_edRecorder, {
-      addChunk: chunk => _edRecChunks.push(chunk),
+    const job = createdJob;
+    const jobRecorder = job.recorder;
+    const mime = job.mime;
+    if (token !== _edRecGeneration) { job.cleanup(); return; }
+    _edRecorder = jobRecorder;
+    _edRecMime = mime;
+    const startedAt = performance.now();
+    let jobTimer = null;
+    const releaseEdFinalize = _bindRecorderFinalize(jobRecorder, {
+      addChunk: chunk => chunks.push(chunk),
       onFinalize: async () => {
         releaseEdFinalize();
-        if (_edRecJob) { _edRecJob.cleanup(); _edRecJob = null; }
-        _edRecorder = null;
-        _edRecResetUI();
-        if (!_edRecChunks.length) { flipToast('⚠ No se pudo guardar el video EDIT.'); return; }
-        _edRecMime = _resolveRecordedMime(_edRecMime, _edRecChunks);
-        const blob = new Blob(_edRecChunks, { type: _edRecMime });
-        await saveBlob(blob, _flipName('edit', _videoExtFromMime(_edRecMime)));
+        job.cleanup();
+        clearInterval(jobTimer);
+        if (token === _edRecGeneration) {
+          _edRecorder = null;
+          _edRecTimer = null;
+          _edRecResetUI();
+        }
+        if (!chunks.length) {
+          if (token === _edRecGeneration) flipToast('⚠ No se pudo guardar el video EDIT.');
+          return;
+        }
+        const result = await _makeRecordedBlob(chunks, mime, startedAt);
+        if (token === _edRecGeneration) _edRecMime = result.mime;
+        await saveBlob(result.blob, _flipName('edit', _videoExtFromMime(result.mime)));
       }
     });
-    _edRecorder.start(250);
+    jobRecorder.start(250);
     let edS = 0;
-    _edRecTimer = setInterval(() => {
+    jobTimer = setInterval(() => {
+      if (token !== _edRecGeneration) { clearInterval(jobTimer); return; }
       edS++;
       const mm = String(edS / 60 | 0).padStart(2, '0'), ss = String(edS % 60).padStart(2, '0');
       btnEditRec.querySelector('.btn-label').textContent = mm + ':' + ss;
       if (edS >= 110) btnEditRec.style.color = '#ff4444';
-      if (edS >= 120) { clearInterval(_edRecTimer); _stopRecorderSafely(_edRecorder); }
+      if (edS >= 120) { clearInterval(jobTimer); _stopRecorderSafely(jobRecorder); }
     }, 1000);
+    _edRecTimer = jobTimer;
     btnEditRec.classList.add('recording');
     btnEditRec.querySelector('.btn-icon').textContent = '⏹';
   });
@@ -22231,6 +22466,7 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
     try {
       _outRecJob = _outCreateRecordingJob();
       const { recorder, mime } = _createFlipRecorder(_outRecJob.stream, 6_000_000);
+      const startedAt = performance.now();
       _outRecorder = recorder; _outMime = mime;
       releaseOutFinalize = _bindRecorderFinalize(recorder, {
         addChunk: chunk => _outChunks.push(chunk),
@@ -22245,10 +22481,10 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
           _outRecStartedAt = 0;
           _outSendStatus();
           if (!_outChunks.length) { _outReportError('REC_EMPTY', null, 'La grabación no produjo datos'); return; }
-          _outMime = _resolveRecordedMime(_outMime, _outChunks);
-          const blob = new Blob(_outChunks, { type: _outMime });
+          const result = await _makeRecordedBlob(_outChunks, _outMime, startedAt);
+          _outMime = result.mime;
           try {
-            await saveBlob(blob, _flipName('stage', _videoExtFromMime(_outMime)));
+            await saveBlob(result.blob, _flipName('stage', _videoExtFromMime(_outMime)));
             chan?.postMessage({ type: 'saved', name: 'recording' });
           } catch (err) {
             _outReportError('REC_SAVE_FAILED', err, 'No se pudo guardar la grabación');
