@@ -14359,8 +14359,19 @@ function _getFlipRecordDimensions(sourceCanvas = null, options = {}) {
   }
   if (!aw || !ah) { aw = camAspW || 4; ah = camAspH || 3; aspect = `${aw}:${ah}`; }
   const shortSide = res.base;
-  if (aw <= ah) return { width: shortSide, height: Math.round(shortSide * ah / aw), aspect };
-  return { width: Math.round(shortSide * aw / ah), height: shortSide, aspect };
+  let width, height;
+  if (aw <= ah) { width = shortSide; height = Math.round(shortSide * ah / aw); }
+  else { width = Math.round(shortSide * aw / ah); height = shortSide; }
+  // Tope del lado largo: avc1 congela el main thread con anchos extremos (~12000px
+  // medido en review T7); 4096 verificado estable. Se reescala conservando aspecto.
+  const FLIP_REC_LONG_MAX = 4096;
+  const longSide = Math.max(width, height);
+  if (longSide > FLIP_REC_LONG_MAX) {
+    const k = FLIP_REC_LONG_MAX / longSide;
+    width = Math.max(2, Math.round(width * k / 2) * 2);
+    height = Math.max(2, Math.round(height * k / 2) * 2);
+  }
+  return { width, height, aspect };
 }
 function _createRecordingCanvasStream(sourceCanvas, fps = 30, options = {}) {
   if (typeof sourceCanvas.captureStream !== 'function') {
