@@ -1616,12 +1616,13 @@
     }
     #fusionHUD.visible { display:flex; }
     .fusion-fam-row { display:flex; gap:4px; flex-wrap:wrap; }
-    .fusion-fam-pill {
+    .fusion-aspect-row { display:flex; gap:4px; }
+    .fusion-fam-pill, .fusion-aspect-pill {
       flex:1; min-width:52px; background:none; border:1px solid var(--dark); color:var(--mid);
       font-family:monospace; font-size:9px; font-weight:bold; letter-spacing:.5px;
       padding:5px 4px; cursor:pointer; transition:.1s; white-space:nowrap;
     }
-    .fusion-fam-pill.active { background:var(--paper); color:var(--ink); border-color:var(--paper); }
+    .fusion-fam-pill.active, .fusion-aspect-pill.active { background:var(--paper); color:var(--ink); border-color:var(--paper); }
     .fusion-react-row { display:flex; align-items:center; gap:6px; }
     .fusion-react-row span.fr-lbl { color:var(--paper); font-family:monospace; font-size:9px; letter-spacing:1px; min-width:60px; flex-shrink:0; }
     .fusion-react-row span.fr-val { color:var(--paper); font-family:monospace; font-size:9px; min-width:34px; text-align:right; flex-shrink:0; }
@@ -2197,6 +2198,7 @@
       .scr-asp-btn,
       .sono-preset-btn,
       .wmp-preset-btn,
+      .fusion-aspect-pill,
       .pcs-slot { min-width:40px; min-height:40px; }
       body.cam-family-open #flipSettingsTrigger,
       body.cam-family-open #btnMicMobile,
@@ -3883,10 +3885,16 @@
      FUSION — live cam → CAM family → GLITCH pipeline (F3)
 ════════════════════════════════════════════════════════════════ -->
 <div id="fusionArea">
-  <canvas id="fusionCanvas" width="1024" height="768"></canvas>
+  <canvas id="fusionCanvas" width="1280" height="960"></canvas>
 </div>
 
 <div id="fusionHUD">
+  <div class="fusion-aspect-row" id="fusionAspectRow" role="group" aria-label="Aspecto FUSION">
+    <button type="button" class="fusion-aspect-pill active" data-fusion-aspect="4:3" aria-pressed="true">4:3</button>
+    <button type="button" class="fusion-aspect-pill" data-fusion-aspect="1:1" aria-pressed="false">1:1</button>
+    <button type="button" class="fusion-aspect-pill" data-fusion-aspect="16:9" aria-pressed="false">16:9</button>
+    <button type="button" class="fusion-aspect-pill" data-fusion-aspect="9:16" aria-pressed="false">9:16</button>
+  </div>
   <div class="fusion-fam-row" id="fusionFamRow"></div>
   <div class="fusion-react-row">
     <span class="fr-lbl">REACT</span>
@@ -19690,6 +19698,16 @@ window._editPipeline = { source: { type: 'cam' }, steps: [{ engine: 'glitch', on
 // the script) is parsed.
 window._stageState = null;
 
+// FUSION uses its own aspect selector. Work buffers keep a 480px short side;
+// the visible/export canvas is resized to 2x in _fusionApplyAspect.
+const FUSION_ASPECT_DIMS = Object.freeze({
+  '4:3':  Object.freeze({ width:640, height:480 }),
+  '1:1':  Object.freeze({ width:480, height:480 }),
+  '16:9': Object.freeze({ width:854, height:480 }),
+  '9:16': Object.freeze({ width:480, height:854 }),
+});
+let fusionAspect = '4:3';
+
 let _saveSettingsTimer = null;
 function _writeSettings() {
   _saveSettingsTimer = null;
@@ -19709,7 +19727,7 @@ function _writeSettings() {
       acSepiaVal, acInvertVal, acThreshOn, acThreshVal,
       acSharpOn, acSharpVal, acEdgeOn, acEdgeVal,
       camFpsTarget, camFpsEnabled, uploadFPS, asciiFont,
-      scrAudioReactVal,
+      scrAudioReactVal, fusionAspect,
       _sfParams: window._sfParams,
       editPipeline: window._editPipeline,
       stageState: window._stageState,
@@ -19908,6 +19926,7 @@ function loadSettings() {
       const e = document.getElementById('scrAudioReact');
       if (e) { e.value = scrAudioReactVal; const v = document.getElementById('vScrAudioReact'); if (v) v.textContent = scrAudioReactVal + '%'; }
     }
+    fusionAspect = Object.prototype.hasOwnProperty.call(FUSION_ASPECT_DIMS, s.fusionAspect) ? s.fusionAspect : '4:3';
     // FLOW playground params (window._sfParams — see declaration near
     // saveSettings; the FLOW block below reads this object live per frame)
     if (s._sfParams && typeof s._sfParams === 'object') {
@@ -21238,21 +21257,64 @@ if (!FLIP_IS_MOBILE()) {
 let fusionRunning = false;
 let _fusionSrc = null;
 let _fusionLastFrameMs = 0;
+let _fusionRecordingLocked = false;
 const _fusionPipelineSteps = [{ engine: 'cam' }, { engine: 'glitch', params: { glitch: {} } }];
 const fusionCanvas = document.getElementById('fusionCanvas');
 const ctxFusion = fusionCanvas.getContext('2d');
+const FUSION_OUTPUT_SCALE = 2;
+
+function _fusionSyncAspectPills() {
+  document.querySelectorAll('.fusion-aspect-pill').forEach(btn => {
+    const active = btn.dataset.fusionAspect === fusionAspect;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function _fusionApplyAspect(aspect, options = {}) {
+  if (_fusionRecordingLocked) {
+    flipToast('⚠ Detén REC para cambiar el aspecto');
+    return false;
+  }
+  fusionAspect = Object.prototype.hasOwnProperty.call(FUSION_ASPECT_DIMS, aspect) ? aspect : '4:3';
+  const { width, height } = FUSION_ASPECT_DIMS[fusionAspect];
+  if (!_fusionSrc) _fusionSrc = document.createElement('canvas');
+  if (_fusionSrc.width !== width || _fusionSrc.height !== height) {
+    _fusionSrc.width = width;
+    _fusionSrc.height = height;
+  }
+  _ensurePipeBuffers(width, height);
+  const outW = width * FUSION_OUTPUT_SCALE, outH = height * FUSION_OUTPUT_SCALE;
+  if (fusionCanvas.width !== outW || fusionCanvas.height !== outH) {
+    fusionCanvas.width = outW;
+    fusionCanvas.height = outH;
+  }
+  _fusionSyncAspectPills();
+  if (options.persist !== false) saveSettings();
+  return true;
+}
 
 // Resolve this frame's source canvas: live video (BLOQUE 1 — never mirrored,
 // real camera orientation everywhere) or, with no camera, the EXT AUDIO
 // waveform frame. Returns null when neither is available.
 function _fusionGetSrcCanvas() {
-  const w = 640, h = 480;
+  const { width:w, height:h } = FUSION_ASPECT_DIMS[fusionAspect];
   if (!_fusionSrc) _fusionSrc = document.createElement('canvas');
   if (_fusionSrc.width !== w || _fusionSrc.height !== h) { _fusionSrc.width = w; _fusionSrc.height = h; }
   if (vid.videoWidth) {
     const fctx = _fusionSrc.getContext('2d');
+    const srcW = vid.videoWidth, srcH = vid.videoHeight;
+    const srcAspect = srcW / srcH, dstAspect = w / h;
+    let sx = 0, sy = 0, sw = srcW, sh = srcH;
+    if (srcAspect > dstAspect) {
+      sw = srcH * dstAspect;
+      sx = (srcW - sw) / 2;
+    } else {
+      sh = srcW / dstAspect;
+      sy = (srcH - sh) / 2;
+    }
     fctx.save();
-    fctx.drawImage(vid, 0, 0, w, h);
+    fctx.drawImage(vid, sx, sy, sw, sh, 0, 0, w, h);
     fctx.restore();
     return _fusionSrc;
   }
@@ -21283,6 +21345,12 @@ function _fusionLoop(ts) {
 }
 
 (function _initFusion() {
+  const aspectRow = document.getElementById('fusionAspectRow');
+  aspectRow.querySelectorAll('.fusion-aspect-pill').forEach(btn => {
+    btn.addEventListener('click', () => _fusionApplyAspect(btn.dataset.fusionAspect));
+  });
+  _fusionApplyAspect(fusionAspect, { persist:false });
+
   // ── Family pills — mirrors CAM's family list, drives the same global
   // camFamily via the shared _setCamFamily() setter (grep it: it's the
   // function the CAM family tray buttons call too).
@@ -21356,10 +21424,14 @@ function _fusionLoop(ts) {
     const token = ++_fuRecGeneration;
     const chunks = [];
     let createdJob = null;
+    _fusionRecordingLocked = true;
     try {
       createdJob = await _createFlipRecordingJob(fusionCanvas, 30, 6_000_000, {});
     } catch (e) {
-      if (token === _fuRecGeneration) flipToast('⚠ Error: ' + e.message);
+      if (token === _fuRecGeneration) {
+        _fusionRecordingLocked = false;
+        flipToast('⚠ Error: ' + e.message);
+      }
       return;
     }
     const job = createdJob;
@@ -21377,6 +21449,7 @@ function _fusionLoop(ts) {
         job.cleanup();
         clearInterval(jobTimer);
         if (token === _fuRecGeneration) {
+          _fusionRecordingLocked = false;
           _fuRecorder = null;
           _fuRecTimer = null;
           _fuRecResetUI();
