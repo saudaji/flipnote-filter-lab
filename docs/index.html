@@ -6627,7 +6627,6 @@ function renderCaskia(source, srcW, srcH, targetCtx, mirror) {
   if (mirror) { ctxS.translate(DSI_W, 0); ctxS.scale(-1, 1); }
   ctxS.drawImage(source, sx, sy, sw, sh, 0, 0, DSI_W, DSI_H);
   ctxS.restore();
-  const { data: src } = ctxS.getImageData(0, 0, DSI_W, DSI_H);
 
   if (camVariant === 'SEIKO') {
     const { gridW, gridH } = _ensureCaskiaSeikoBuffers();
@@ -8790,6 +8789,8 @@ const _oscamWebGLEngine = (() => {
   let lineProgram = null;
   let finalProgram = null;
   let blitProgram = null;
+  const uniformLocations = new Map();
+  const positionLocations = new Map();
   let warned = false;
 
   const vertSrc = `
@@ -8993,6 +8994,15 @@ const _oscamWebGLEngine = (() => {
     }
     return program;
   }
+  function cacheProgramLocations(program, uniformNames) {
+    const locations = new Map();
+    for (const name of uniformNames) locations.set(name, gl.getUniformLocation(program, name));
+    uniformLocations.set(program, locations);
+    positionLocations.set(program, gl.getAttribLocation(program, 'a_position'));
+  }
+  function uniformLocation(program, name) {
+    return uniformLocations.get(program).get(name);
+  }
   function createTexture(w, h, source) {
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -9021,7 +9031,7 @@ const _oscamWebGLEngine = (() => {
   }
   function useProgram(program) {
     gl.useProgram(program);
-    const posLoc = gl.getAttribLocation(program, 'a_position');
+    const posLoc = positionLocations.get(program);
     gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.enableVertexAttribArray(posLoc);
     gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
@@ -9029,7 +9039,7 @@ const _oscamWebGLEngine = (() => {
   function bindTexture(program, uniformName, tex, unit) {
     gl.activeTexture(gl.TEXTURE0 + unit);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.uniform1i(gl.getUniformLocation(program, uniformName), unit);
+    gl.uniform1i(uniformLocation(program, uniformName), unit);
   }
   function runPass(program, target, setup) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
@@ -9070,8 +9080,8 @@ const _oscamWebGLEngine = (() => {
     if (ready) return true;
     if (failed) return false;
     try {
-      gl = canvas.getContext('webgl', { alpha:false, antialias:false, premultipliedAlpha:false, preserveDrawingBuffer:true }) ||
-           canvas.getContext('experimental-webgl', { alpha:false, antialias:false, premultipliedAlpha:false, preserveDrawingBuffer:true });
+      gl = canvas.getContext('webgl', { alpha:false, antialias:false, premultipliedAlpha:false }) ||
+           canvas.getContext('experimental-webgl', { alpha:false, antialias:false, premultipliedAlpha:false });
       if (!gl) throw new Error('WebGL unavailable');
       quad = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, quad);
@@ -9084,6 +9094,11 @@ const _oscamWebGLEngine = (() => {
       lineProgram = makeProgram(lineFrag);
       finalProgram = makeProgram(finalFrag);
       blitProgram = makeProgram(blitFrag);
+      cacheProgramLocations(preProgram, ['u_source', 'u_texel']);
+      cacheProgramLocations(gradProgram, ['u_luma', 'u_texel']);
+      cacheProgramLocations(lineProgram, ['u_grad', 'u_texel', 'u_sensitivity', 'u_width', 'u_lock', 'u_mode', 'u_time']);
+      cacheProgramLocations(finalProgram, ['u_line', 'u_prev', 'u_bg', 'u_floor', 'u_core', 'u_hot', 'u_glow', 'u_scan', 'u_lock', 'u_mode', 'u_time', 'u_resolution']);
+      cacheProgramLocations(blitProgram, ['u_tex']);
       ensureTargets();
       ready = true;
       return true;
@@ -9120,20 +9135,20 @@ const _oscamWebGLEngine = (() => {
       const modeId = mode === 'STATIC' ? 2 : mode === 'WAVE' ? 1 : 0;
       runPass(preProgram, lumaTarget, program => {
         bindTexture(program, 'u_source', sourceTex, 0);
-        gl.uniform2f(gl.getUniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
+        gl.uniform2f(uniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
       });
       runPass(gradProgram, gradTarget, program => {
         bindTexture(program, 'u_luma', lumaTarget.tex, 0);
-        gl.uniform2f(gl.getUniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
+        gl.uniform2f(uniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
       });
       runPass(lineProgram, lineTarget, program => {
         bindTexture(program, 'u_grad', gradTarget.tex, 0);
-        gl.uniform2f(gl.getUniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_sensitivity'), cfg.sensitivityN);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_width'), cfg.lineWidthN);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_lock'), cfg.lockN);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_mode'), modeId);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_time'), performance.now() * 0.001);
+        gl.uniform2f(uniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
+        gl.uniform1f(uniformLocation(program, 'u_sensitivity'), cfg.sensitivityN);
+        gl.uniform1f(uniformLocation(program, 'u_width'), cfg.lineWidthN);
+        gl.uniform1f(uniformLocation(program, 'u_lock'), cfg.lockN);
+        gl.uniform1f(uniformLocation(program, 'u_mode'), modeId);
+        gl.uniform1f(uniformLocation(program, 'u_time'), performance.now() * 0.001);
       });
       const prevTarget = finalTargets[finalIndex];
       const nextIndex = finalIndex ? 0 : 1;
@@ -9141,16 +9156,16 @@ const _oscamWebGLEngine = (() => {
       runPass(finalProgram, nextTarget, program => {
         bindTexture(program, 'u_line', lineTarget.tex, 0);
         bindTexture(program, 'u_prev', prevTarget.tex, 1);
-        gl.uniform3f(gl.getUniformLocation(program, 'u_bg'), palette.bg[0] / 255, palette.bg[1] / 255, palette.bg[2] / 255);
-        gl.uniform3f(gl.getUniformLocation(program, 'u_floor'), palette.floor[0] / 255, palette.floor[1] / 255, palette.floor[2] / 255);
-        gl.uniform3f(gl.getUniformLocation(program, 'u_core'), palette.core[0] / 255, palette.core[1] / 255, palette.core[2] / 255);
-        gl.uniform3f(gl.getUniformLocation(program, 'u_hot'), palette.hot[0] / 255, palette.hot[1] / 255, palette.hot[2] / 255);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_glow'), cfg.glowN);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_scan'), cfg.scanN);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_lock'), cfg.lockN);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_mode'), modeId);
-        gl.uniform1f(gl.getUniformLocation(program, 'u_time'), performance.now() * 0.001);
-        gl.uniform2f(gl.getUniformLocation(program, 'u_resolution'), OUT_W, OUT_H);
+        gl.uniform3f(uniformLocation(program, 'u_bg'), palette.bg[0] / 255, palette.bg[1] / 255, palette.bg[2] / 255);
+        gl.uniform3f(uniformLocation(program, 'u_floor'), palette.floor[0] / 255, palette.floor[1] / 255, palette.floor[2] / 255);
+        gl.uniform3f(uniformLocation(program, 'u_core'), palette.core[0] / 255, palette.core[1] / 255, palette.core[2] / 255);
+        gl.uniform3f(uniformLocation(program, 'u_hot'), palette.hot[0] / 255, palette.hot[1] / 255, palette.hot[2] / 255);
+        gl.uniform1f(uniformLocation(program, 'u_glow'), cfg.glowN);
+        gl.uniform1f(uniformLocation(program, 'u_scan'), cfg.scanN);
+        gl.uniform1f(uniformLocation(program, 'u_lock'), cfg.lockN);
+        gl.uniform1f(uniformLocation(program, 'u_mode'), modeId);
+        gl.uniform1f(uniformLocation(program, 'u_time'), performance.now() * 0.001);
+        gl.uniform2f(uniformLocation(program, 'u_resolution'), OUT_W, OUT_H);
       });
       runPass(blitProgram, null, program => {
         bindTexture(program, 'u_tex', nextTarget.tex, 0);
@@ -9787,6 +9802,19 @@ display.addEventListener('click', () => {
 // the "source" fed into the real render engines (cam families, ASCII)
 // so audio-reactive output textures exactly like camera/video input.
 // ════════════════════════════════════════════════════════════════════
+const _audioDataBuffers = new WeakMap();
+function _getAudioDataBuffers(analyser) {
+  let buffers = _audioDataBuffers.get(analyser);
+  if (!buffers || buffers.freqData.length !== analyser.frequencyBinCount || buffers.timeData.length !== analyser.fftSize) {
+    buffers = {
+      freqData: new Uint8Array(analyser.frequencyBinCount),
+      timeData: new Uint8Array(analyser.fftSize),
+    };
+    _audioDataBuffers.set(analyser, buffers);
+  }
+  return buffers;
+}
+
 let _extAFCanvas = null, _extAFCtx = null;
 function _getExtAudioSourceFrame(w, h) {
   const _an = extAnalyser || sonoAnalyser || wmpAnalyser;
@@ -9802,9 +9830,8 @@ function _getExtAudioSourceFrame(w, h) {
     return _extAFCanvas;
   }
 
-  const freqN = _an.frequencyBinCount;
-  const freqData = new Uint8Array(freqN);
-  const timeData = new Uint8Array(_an.fftSize);
+  const { freqData, timeData } = _getAudioDataBuffers(_an);
+  const freqN = freqData.length;
   _an.getByteFrequencyData(freqData);
   _an.getByteTimeDomainData(timeData);
 
@@ -9929,9 +9956,8 @@ function renderAudioAbstract() {
     return;
   }
 
-  const freqN = _an.frequencyBinCount;
-  const freqData = new Uint8Array(freqN);
-  const timeData = new Uint8Array(_an.fftSize);
+  const { freqData, timeData } = _getAudioDataBuffers(_an);
+  const freqN = freqData.length;
   _an.getByteFrequencyData(freqData);
   _an.getByteTimeDomainData(timeData);
 
@@ -11662,9 +11688,8 @@ function renderASCIIAudio() {
   ctxAscii.fillRect(0, 0, OUT_W, OUT_H);
   if (!_an) return;
 
-  const freqN    = _an.frequencyBinCount;
-  const freqData = new Uint8Array(freqN);
-  const timeData = new Uint8Array(_an.fftSize);
+  const { freqData, timeData } = _getAudioDataBuffers(_an);
+  const freqN = freqData.length;
   _an.getByteFrequencyData(freqData);
   _an.getByteTimeDomainData(timeData);
 
@@ -12352,6 +12377,7 @@ function _rigSeconds(ts) {
 // runs the whole TYPO/pythonization/sharpen/edge machinery), this is a
 // simplified, self-contained grid renderer: samples srcCanvas directly,
 // paints straight to targetCtx, no shared state touched.
+let _asciiStepCv = null, _asciiStepCtx = null;
 function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
   const p = params || {};
   const cols = Math.max(20, Math.min(160, p.cols || 80));
@@ -12360,9 +12386,13 @@ function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
 
   // Sample source at a modest internal resolution for perf.
   const SW = 256, SH = 192;
-  const tmp = document.createElement('canvas');
-  tmp.width = SW; tmp.height = SH;
-  const tctx = tmp.getContext('2d', { willReadFrequently: true });
+  if (!_asciiStepCv) {
+    _asciiStepCv = document.createElement('canvas');
+    _asciiStepCv.width = SW; _asciiStepCv.height = SH;
+    _asciiStepCtx = _asciiStepCv.getContext('2d', { willReadFrequently: true });
+  }
+  const tctx = _asciiStepCtx;
+  tctx.clearRect(0, 0, SW, SH); // el canvas cacheado retendria el frame anterior con fuentes alfa
   tctx.drawImage(srcCanvas, 0, 0, SW, SH);
   const { data: px } = tctx.getImageData(0, 0, SW, SH);
 
@@ -12388,8 +12418,6 @@ function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
   targetCtx.imageSmoothingEnabled = false;
 
   for (let r = 0; r < rows; r++) {
-    let line = '';
-    const x0s = [], gs = [];
     for (let c = 0; c < cols; c++) {
       let gSum = 0, cnt = 0;
       const x0 = Math.floor(c * sCW), x1 = Math.min(Math.ceil((c + 1) * sCW), SW);
@@ -12506,20 +12534,28 @@ const FLIP_STEP_ENGINES = {
   },
 };
 
-let _vhsNoiseCv = null, _vhsScanCv = null;
+let _vhsNoiseTiles = [], _vhsNoiseTileIndex = 0, _vhsNoiseSize = '', _vhsScanCv = null;
 function _vhsNoiseCanvas(w, h) {
-  if (!_vhsNoiseCv) _vhsNoiseCv = document.createElement('canvas');
-  if (_vhsNoiseCv.width !== w || _vhsNoiseCv.height !== h) {
-    _vhsNoiseCv.width = w; _vhsNoiseCv.height = h;
-    const c = _vhsNoiseCv.getContext('2d');
-    const id = c.createImageData(w, h);
-    for (let i = 0; i < id.data.length; i += 4) {
-      const v = (Math.random() * 255) | 0;
-      id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255;
-    }
-    c.putImageData(id, 0, 0);
+  const size = `${w}x${h}`;
+  if (_vhsNoiseSize !== size) {
+    _vhsNoiseSize = size;
+    _vhsNoiseTileIndex = 0;
+    _vhsNoiseTiles = Array.from({ length: 4 }, () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const c = canvas.getContext('2d');
+      const id = c.createImageData(w, h);
+      for (let i = 0; i < id.data.length; i += 4) {
+        const v = (Math.random() * 255) | 0;
+        id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255;
+      }
+      c.putImageData(id, 0, 0);
+      return canvas;
+    });
   }
-  return _vhsNoiseCv;
+  const tile = _vhsNoiseTiles[_vhsNoiseTileIndex];
+  _vhsNoiseTileIndex = (_vhsNoiseTileIndex + 1) % _vhsNoiseTiles.length;
+  return tile;
 }
 function _vhsScanCanvas(w, h) {
   if (!_vhsScanCv) _vhsScanCv = document.createElement('canvas');
@@ -12603,7 +12639,7 @@ function _renderVhsStep(srcCanvas, targetCtx, params, audio, t) {
     targetCtx.globalAlpha = 1;
   }
 
-  // snow — cached noise tile, re-rolled by re-requesting canvas rarely
+  // snow — rotate four pre-generated noise tiles without rebuilding pixel data
   const snowAmt = k * 0.12;
   if (snowAmt > 0.01 && Math.random() < 0.5) {
     targetCtx.globalAlpha = snowAmt;
@@ -12611,7 +12647,6 @@ function _renderVhsStep(srcCanvas, targetCtx, params, audio, t) {
     targetCtx.drawImage(_vhsNoiseCanvas(w, h), 0, 0);
     targetCtx.globalCompositeOperation = 'source-over';
     targetCtx.globalAlpha = 1;
-    _vhsNoiseCv = null; // force re-roll next call (cheap enough at STAGE res)
   }
 
   // cheap bloom — low-alpha self-blit with 'lighter'
@@ -12627,8 +12662,14 @@ function _renderVhsStep(srcCanvas, targetCtx, params, audio, t) {
 
 let _pipeA = null, _pipeB = null;
 function _ensurePipeBuffers(w, h) {
-  if (!_pipeA) _pipeA = document.createElement('canvas');
-  if (!_pipeB) _pipeB = document.createElement('canvas');
+  if (!_pipeA) {
+    _pipeA = document.createElement('canvas');
+    _pipeA.getContext('2d', { willReadFrequently: true });
+  }
+  if (!_pipeB) {
+    _pipeB = document.createElement('canvas');
+    _pipeB.getContext('2d', { willReadFrequently: true });
+  }
   if (_pipeA.width !== w || _pipeA.height !== h) { _pipeA.width = w; _pipeA.height = h; }
   if (_pipeB.width !== w || _pipeB.height !== h) { _pipeB.width = w; _pipeB.height = h; }
 }
@@ -16505,13 +16546,23 @@ function hslToRgb(h, s, l) {
 }
 
 // ── Audio analysis ───────────────────────────────────────────────────
+const _sonoSilentTimeData = new Uint8Array(2048);
+const _sonoFieldPool = [
+  new Float32Array(DSI_W * DSI_H),
+  new Float32Array(DSI_W * DSI_H),
+  new Float32Array(DSI_W * DSI_H),
+];
+function _ensureSonoFieldPool() {
+  const length = DSI_W * DSI_H;
+  if (_sonoFieldPool[0].length === length) return;
+  for (let i = 0; i < _sonoFieldPool.length; i++) _sonoFieldPool[i] = new Float32Array(length);
+}
 function analyzeAudio() {
   const _sonoAn = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? extAnalyser : sonoAnalyser;
-  if (!_sonoAn) return { amp:0, pitchNorm:0.1, blowStr:0, bassE:0, midE:0, trebE:0, timeData:new Uint8Array(2048) };
-  const N = _sonoAn.frequencyBinCount;
-  const freqData = new Uint8Array(N);
+  if (!_sonoAn) return { amp:0, pitchNorm:0.1, blowStr:0, bassE:0, midE:0, trebE:0, timeData:_sonoSilentTimeData };
+  const { freqData, timeData } = _getAudioDataBuffers(_sonoAn);
+  const N = freqData.length;
   _sonoAn.getByteFrequencyData(freqData);
-  const timeData = new Uint8Array(_sonoAn.fftSize);
   _sonoAn.getByteTimeDomainData(timeData);
 
   // RMS amplitude
@@ -16553,7 +16604,8 @@ function analyzeAudio() {
 
 // ── Audio field generation ────────────────────────────────────────────
 function generateSonoField(amp, pitchNorm, blowStr, t) {
-  const field = new Float32Array(DSI_W * DSI_H);
+  _ensureSonoFieldPool();
+  const field = _sonoFieldPool[0];
   const sf = 0.035 + pitchNorm * 0.13;    // spatial freq
   const cx = DSI_W / 2, cy = DSI_H / 2;
   const ampScale = 0.25 + amp * 0.75;
@@ -16619,7 +16671,8 @@ function renderSonoFlip(field, audio, chaosN) {
 
 // ── Warp a sono field vertically using the scope waveform ─────────────
 function warpFieldByWave(field, timeData, strength) {
-  const result = new Float32Array(DSI_W * DSI_H);
+  _ensureSonoFieldPool();
+  const result = _sonoFieldPool[1];
   const sLen = timeData.length;
   for (let y = 0; y < DSI_H; y++) {
     for (let x = 0; x < DSI_W; x++) {
@@ -16721,7 +16774,8 @@ function renderScopeToAscii() {
   ctxS.imageSmoothingEnabled = false;
   ctxS.drawImage(sonoScopeCvs, 0, 0, DSI_W, DSI_H);
   const { data: src } = ctxS.getImageData(0, 0, DSI_W, DSI_H);
-  const field = new Float32Array(DSI_W * DSI_H);
+  _ensureSonoFieldPool();
+  const field = _sonoFieldPool[2];
   for (let i = 0; i < DSI_W * DSI_H; i++) {
     const i4 = i << 2;
     field[i] = (src[i4] * 77 + src[i4+1] * 150 + src[i4+2] * 29) / (255 * 256);
@@ -18105,9 +18159,8 @@ function wmpLoop() {
   _wmpLastFrameT = _wmpNow;
   const _wmpAn = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? extAnalyser : wmpAnalyser;
   if (!_wmpAn) { requestAnimationFrame(wmpLoop); return; }
-  const N = _wmpAn.frequencyBinCount;
-  const freqData = new Uint8Array(N);
-  const timeData = new Uint8Array(_wmpAn.fftSize);
+  const { freqData, timeData } = _getAudioDataBuffers(_wmpAn);
+  const N = freqData.length;
   _wmpAn.getByteFrequencyData(freqData);
   _wmpAn.getByteTimeDomainData(timeData);
   const sens    = 0.4 + (wmpSensVal / 100) * 1.6;
@@ -19173,9 +19226,17 @@ let _ctxScrAudioBuf;
 // Core pixel effect — applies SCRASH effects from srcCtx to dstCtx
 // srcCtx must have pixels already drawn; dstCtx receives result
 // t = elapsed seconds (used for animation)
+let _scrashOutBuffer = new Uint8ClampedArray(0);
+let _scrashRandWidth = 0;
+let _scrashGrainNoise = new Int16Array(0);
+let _scrashChaosMask = new Uint8Array(0);
+let _scrashChaosR = new Uint8Array(0), _scrashChaosG = new Uint8Array(0), _scrashChaosB = new Uint8Array(0);
+const _scrashClamp8 = Uint8Array.from({ length: 512 }, (_, i) => Math.max(0, Math.min(255, i - 128)));
 function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
   const { data: px } = srcCtx.getImageData(0, 0, w, h);
-  const out = new Uint8ClampedArray(w * h * 4);
+  const outLength = w * h * 4;
+  if (_scrashOutBuffer.length !== outLength) _scrashOutBuffer = new Uint8ClampedArray(outLength);
+  const out = _scrashOutBuffer;
 
   // P is both the layer's parameter bag and its runtime-state owner. Empty P objects
   // inherit the GLITCH tab globals, which gives TAB/FUSION/test rigs independent state
@@ -19227,6 +19288,33 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
   // waves on top of the primary one (hard cap 3 layers total) — "more waves", not just bigger.
   const extraWaves = !!(A && A.bass > 0.6);
   const hueEff = hueBase + hueSpeedExtra * t;
+  const grainOn = grainEff > 0;
+  const chaosOn = scrPyPal === 'none' && chaosEff > 0;
+  const grainScale = grainEff * 2;
+  const chaosChance = chaosEff * 0.003;
+  const random = Math.random;
+  if (_scrashRandWidth !== w) {
+    _scrashRandWidth = w;
+    _scrashGrainNoise = new Int16Array(w);
+    _scrashChaosMask = new Uint8Array(w);
+    _scrashChaosR = new Uint8Array(w);
+    _scrashChaosG = new Uint8Array(w);
+    _scrashChaosB = new Uint8Array(w);
+  }
+  let hrR = 0, hrG = 0, hrB = 0, hgR = 0, hgG = 0, hgB = 0, hbR = 0, hbG = 0, hbB = 0;
+  if (hueEff !== 0) {
+    const hrad = hueEff * Math.PI / 180;
+    const hcos = Math.cos(hrad), hsin = Math.sin(hrad);
+    hrR = 0.213 + hcos * 0.787 - hsin * 0.213;
+    hrG = 0.213 - hcos * 0.213 + hsin * 0.143;
+    hrB = 0.213 - hcos * 0.213 - hsin * 0.787;
+    hgR = 0.715 - hcos * 0.715 - hsin * 0.715;
+    hgG = 0.715 + hcos * 0.285 + hsin * 0.140;
+    hgB = 0.715 - hcos * 0.715 + hsin * 0.715;
+    hbR = 0.072 - hcos * 0.072 + hsin * 0.928;
+    hbG = 0.072 - hcos * 0.072 - hsin * 0.283;
+    hbB = 0.072 + hcos * 0.928 + hsin * 0.072;
+  }
 
   for (let y = 0; y < h; y++) {
     let waveX = 0;
@@ -19239,30 +19327,49 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
       waveX = Math.round(wv);
     }
     let srcY = y;
-    if (dripT > 0 && Math.random() < dripT * 0.15) {
-      srcY = Math.max(0, y + Math.floor(Math.random() * dripT * 30));
+    if (dripT > 0 && random() < dripT * 0.15) {
+      srcY = Math.max(0, y + Math.floor(random() * dripT * 30));
       if (srcY >= h) srcY = y;
     }
+    // Preserve the original grain→chaos RNG order, but keep random calls out of the pixel math loop.
     for (let x = 0; x < w; x++) {
-      const sx  = ((x + waveX) % w + w) % w;
-      const si  = (srcY * w + sx) * 4;
-      const rSX = ((x + waveX - cOff) % w + w) % w;
-      const bSX = ((x + waveX + cOff) % w + w) % w;
-
-      let r = px[(srcY * w + rSX) * 4];
+      if (grainOn) _scrashGrainNoise[x] = ((random() - 0.5) * grainScale) | 0;
+      if (chaosOn && random() < chaosChance) {
+        _scrashChaosMask[x] = 1;
+        _scrashChaosR[x] = random() * 255 | 0;
+        _scrashChaosG[x] = random() * 255 | 0;
+        _scrashChaosB[x] = random() * 255 | 0;
+      } else {
+        _scrashChaosMask[x] = 0;
+      }
+    }
+    const srcRowByte = srcY * w * 4;
+    const srcRowEnd = srcRowByte + w * 4;
+    let sx = waveX % w;
+    if (sx < 0) sx += w;
+    let rSX = (waveX - cOff) % w;
+    if (rSX < 0) rSX += w;
+    let bSX = (waveX + cOff) % w;
+    if (bSX < 0) bSX += w;
+    let si = srcRowByte + sx * 4;
+    let ri = srcRowByte + rSX * 4;
+    let bi = srcRowByte + bSX * 4;
+    let oi = y * w * 4;
+    for (let x = 0; x < w; x++, oi += 4) {
+      let r = px[ri];
       let g = px[si + 1];
-      let b = px[(srcY * w + bSX) * 4 + 2];
+      let b = px[bi + 2];
       const a = px[si + 3];
 
-      // CRUSH: dark pixels → black
-      if (crushT > 0) {
-        const lum = (r * 77 + g * 150 + b * 29) >> 8;
-        if (lum < crushT) { r = 0; g = 0; b = 0; }
+      // CRUSH + NEON share luminance; a crushed pixel's luminance is exactly zero.
+      let lum = 0;
+      if (crushT > 0 || neonT > 0) lum = (r * 77 + g * 150 + b * 29) >> 8;
+      if (crushT > 0 && lum < crushT) {
+        r = 0; g = 0; b = 0; lum = 0;
       }
 
       // NEON: push colors toward neon palette by luminance band
       if (neonT > 0) {
-        const lum = (r * 77 + g * 150 + b * 29) >> 8;
         if (lum < 85) {
           r = (r + (204 - r) * neonT) | 0;
           g = (g * (1 - neonT)) | 0;
@@ -19280,28 +19387,31 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
 
       // HUE rotation (base slider angle + audio-driven extra spin accumulated over time via t)
       if (hueEff !== 0) {
-        const hrad = hueEff * Math.PI / 180, hcos = Math.cos(hrad), hsin = Math.sin(hrad);
-        const hr = r*(0.213+hcos*0.787-hsin*0.213)+g*(0.213-hcos*0.213+hsin*0.143)+b*(0.213-hcos*0.213-hsin*0.787);
-        const hg = r*(0.715-hcos*0.715-hsin*0.715)+g*(0.715+hcos*0.285+hsin*0.140)+b*(0.715-hcos*0.715+hsin*0.715);
-        const hb = r*(0.072-hcos*0.072+hsin*0.928)+g*(0.072-hcos*0.072-hsin*0.283)+b*(0.072+hcos*0.928+hsin*0.072);
-        r=Math.max(0,Math.min(255,hr))|0; g=Math.max(0,Math.min(255,hg))|0; b=Math.max(0,Math.min(255,hb))|0;
+        const hr = r * hrR + g * hrG + b * hrB;
+        const hg = r * hgR + g * hgG + b * hgB;
+        const hb = r * hbR + g * hbG + b * hbB;
+        r = hr < 0 ? 0 : hr > 255 ? 255 : hr | 0;
+        g = hg < 0 ? 0 : hg > 255 ? 255 : hg | 0;
+        b = hb < 0 ? 0 : hb > 255 ? 255 : hb | 0;
       }
       // GRAIN: luminance noise
-      if (grainEff > 0) {
-        const noise = ((Math.random()-0.5)*grainEff*2)|0;
-        r=Math.max(0,Math.min(255,r+noise));
-        g=Math.max(0,Math.min(255,g+noise));
-        b=Math.max(0,Math.min(255,b+noise));
+      if (grainOn) {
+        const noise = _scrashGrainNoise[x];
+        r = _scrashClamp8[r + noise + 128];
+        g = _scrashClamp8[g + noise + 128];
+        b = _scrashClamp8[b + noise + 128];
       }
       // PALETTE quantization (Pythonization palettes)
       if (scrPyPal !== 'none') { [r,g,b] = _scrQuantize(r,g,b); }
       // CHAOS: random pixel disruption (when no palette: random color flash)
-      else if (chaosEff > 0 && Math.random() < chaosEff * 0.003) {
-        r=Math.random()*255|0; g=Math.random()*255|0; b=Math.random()*255|0;
+      else if (_scrashChaosMask[x]) {
+        r = _scrashChaosR[x]; g = _scrashChaosG[x]; b = _scrashChaosB[x];
       }
 
-      const oi = (y * w + x) * 4;
       out[oi] = r; out[oi+1] = g; out[oi+2] = b; out[oi+3] = a;
+      si += 4; if (si === srcRowEnd) si = srcRowByte;
+      ri += 4; if (ri === srcRowEnd) ri = srcRowByte;
+      bi += 4; if (bi === srcRowEnd) bi = srcRowByte;
     }
   }
   dstCtx.putImageData(new ImageData(out, w, h), 0, 0);
@@ -19332,9 +19442,7 @@ function _scrashComputeBands(freqData, timeData) {
 // snapshot is shared with _applyScrash; this function never advances FlipAudioReact.
 function _renderScrashAudioSource(w, h, t, audio) {
   const an = extAnalyser;
-  const freqN = an.frequencyBinCount;
-  const freqData = new Uint8Array(freqN);
-  const timeData = new Uint8Array(an.fftSize);
+  const { freqData, timeData } = _getAudioDataBuffers(an);
   an.getByteFrequencyData(freqData);
   an.getByteTimeDomainData(timeData);
 
@@ -19416,27 +19524,32 @@ function _renderScrashAudioSource(w, h, t, audio) {
   _ctxScrTmp.drawImage(_scrAudioBuf, 0, 0);
 }
 
+let _scrashLastFrameMs = 0;
 function _scrashLoop(ts) {
   if (!scrashRunning) { _scrashLoopAlive = false; _scrRafId = null; return; }
   _scrashLoopAlive = true;
-  const t = _rigSeconds(ts);
-  const SW = scrashCvs.width, SH = scrashCvs.height;
-  const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
+  const minInterval = 1000 / 30;
+  if (ts - _scrashLastFrameMs >= minInterval) {
+    const t = _rigSeconds(ts);
+    const SW = scrashCvs.width, SH = scrashCvs.height;
+    const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
 
-  if (vid.videoWidth) {
-    // Draw video fitting the canvas (letterbox — show full image, no crop)
-    const vA = vid.videoWidth / vid.videoHeight, cA = SW / SH;
-    let dx=0, dy=0, dw=SW, dh=SH;
-    if (vA > cA) { dh = SW / vA; dy = (SH - dh) / 2; }
-    else          { dw = SH * vA; dx = (SW - dw) / 2; }
-    _ctxScrTmp.fillStyle='#000'; _ctxScrTmp.fillRect(0,0,SW,SH);
-    _ctxScrTmp.drawImage(vid, dx, dy, dw, dh);
-    // Camera + ext audio simultaneously: also feed audioMod so the live feed reacts to the music.
-    // F4: incluye extMicOnlyMode — mic móvil modula GLITCH sin apagar la cámara.
-    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, t, audio, _scrTabLayerParams);
-  } else if ((extAudioMode || extMicOnlyMode) && extAnalyser) {
-    _renderScrashAudioSource(SW, SH, t, audio);
-    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, t, audio, _scrTabLayerParams);
+    if (vid.videoWidth) {
+      // Draw video fitting the canvas (letterbox — show full image, no crop)
+      const vA = vid.videoWidth / vid.videoHeight, cA = SW / SH;
+      let dx=0, dy=0, dw=SW, dh=SH;
+      if (vA > cA) { dh = SW / vA; dy = (SH - dh) / 2; }
+      else          { dw = SH * vA; dx = (SW - dw) / 2; }
+      _ctxScrTmp.fillStyle='#000'; _ctxScrTmp.fillRect(0,0,SW,SH);
+      _ctxScrTmp.drawImage(vid, dx, dy, dw, dh);
+      // Camera + ext audio simultaneously: also feed audioMod so the live feed reacts to the music.
+      // F4: incluye extMicOnlyMode — mic móvil modula GLITCH sin apagar la cámara.
+      _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, t, audio, _scrTabLayerParams);
+    } else if ((extAudioMode || extMicOnlyMode) && extAnalyser) {
+      _renderScrashAudioSource(SW, SH, t, audio);
+      _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, t, audio, _scrTabLayerParams);
+    }
+    _scrashLastFrameMs = ts;
   }
 
   _scrRafId = requestAnimationFrame(_scrashLoop);
@@ -19495,7 +19608,9 @@ window._editPipeline = { source: { type: 'cam' }, steps: [{ engine: 'glitch', on
 // the script) is parsed.
 window._stageState = null;
 
-function saveSettings() {
+let _saveSettingsTimer = null;
+function _writeSettings() {
+  _saveSettingsTimer = null;
   try {
     localStorage.setItem('flipSettings', JSON.stringify({
       activePal, asciiActivePal, uploadActivePal, vfdActivePal, legacyMode, camFamily, camVariant,
@@ -19519,6 +19634,15 @@ function saveSettings() {
     }));
   } catch(_) {}
 }
+function saveSettings() {
+  if (_saveSettingsTimer) clearTimeout(_saveSettingsTimer);
+  _saveSettingsTimer = setTimeout(_writeSettings, 300);
+}
+window.addEventListener('pagehide', () => {
+  if (!_saveSettingsTimer) return;
+  clearTimeout(_saveSettingsTimer);
+  _writeSettings();
+});
 
 function loadSettings() {
   try {
@@ -21364,7 +21488,7 @@ function _editRenderWmpSource(ctx, w, h, t) {
   ctx.fillRect(0, 0, w, h);
   if (!((extAudioMode || extMicOnlyMode) && extAnalyser)) return;
   const bins = 48;
-  const freq = new Uint8Array(extAnalyser.frequencyBinCount);
+  const { freqData: freq } = _getAudioDataBuffers(extAnalyser);
   extAnalyser.getByteFrequencyData(freq);
   const step = Math.floor(freq.length / bins) || 1;
   const barW = w / bins;
@@ -22122,12 +22246,15 @@ function _stagePipelineForRender(state) {
     return _stagePreviewSrc;
   }
   let _stagePreviewRunning = false;
+  let _stagePreviewLastFrameMs = 0;
   function _stagePreviewLoop(ts) {
     if (!_stagePreviewRunning) return;
-    if (ctxStagePreview) {
+    const minInterval = 1000 / 30;
+    if (ctxStagePreview && ts - _stagePreviewLastFrameMs >= minInterval) {
       const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
       const src = _stagePreviewGetSrc(320, 240, ts, audio);
       runPipeline(_stagePipelineForRender(_stageCtlState), src, ctxStagePreview, audio, ts);
+      _stagePreviewLastFrameMs = ts;
     }
     requestAnimationFrame(_stagePreviewLoop);
   }
