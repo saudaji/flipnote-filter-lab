@@ -12214,10 +12214,10 @@ function cameraLoop(t) {
       }
       if (srcCanvas) {
         runPipeline(
-          [{ engine: 'cam' }, { engine: 'glitch' }],
+          _pipeTestSteps,
           srcCanvas,
           ctxD,
-          extAudioMode ? FlipAudioReact.read() : null,
+          _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser),
           t
         );
       }
@@ -12339,6 +12339,14 @@ function asciiSettingsChanged() {
 // srcCtx/dstCtx to share the same w/h it's given, which ping-pong buffers of equal
 // size satisfy.
 // ════════════════════════════════════════════════════════════════════
+// Clock contract: loop callers always pass a rAF/performance timestamp in
+// milliseconds. Pipeline steps and the standalone GLITCH tab always receive
+// seconds relative to this single rig epoch.
+const rigT0 = performance.now();
+function _rigSeconds(ts) {
+  return (ts - rigT0) / 1000;
+}
+
 // ── ASCII classic as a self-contained pipeline step (BLOQUE 5) ──────────
 // Unlike _renderASCIISync (paints the global ctxAscii, samples ctxAS globals,
 // runs the whole TYPO/pythonization/sharpen/edge machinery), this is a
@@ -12420,7 +12428,7 @@ function _renderFlowblobStep(srcCanvas, targetCtx, params, audio, t) {
   const ink = TYPO_INKS[inkKey] || '#ffffff';
 
   const maskW = 96, maskH = 54;
-  const maskRaw = helpers.audioMask(maskW, maskH, t * 0.001);
+  const maskRaw = helpers.audioMask(maskW, maskH, t);
   const { dist, nx, ny } = helpers.buildVectors(maskRaw, maskW, maskH, auraDepth, 0.5);
 
   const chars = helpers.chars;
@@ -12438,7 +12446,7 @@ function _renderFlowblobStep(srcCanvas, targetCtx, params, audio, t) {
       const depth = 1 - dist[i] / auraDepth;
       const px_ = x * sx + nx[i] * dist[i] * sx * 0.6;
       const py_ = y * sy + ny[i] * dist[i] * sy * 0.6;
-      const ch = chars[(x * 7 + y * 13 + ((t * 0.005) | 0)) % chars.length];
+      const ch = chars[(x * 7 + y * 13 + ((t * 5) | 0)) % chars.length];
       targetCtx.globalAlpha = Math.max(0.15, depth);
       targetCtx.fillStyle = ink;
       targetCtx.fillText(ch, px_, py_);
@@ -12462,16 +12470,17 @@ const FLIP_STEP_ENGINES = {
       // renders with whatever variant is currently active elsewhere rather than
       // its own default variant. Family-level isolation only, by design.
       const family = (params && params.family && CAM_FAMILIES[params.family]) ? params.family : undefined;
-      _renderCamEngineFrame(srcCanvas, srcCanvas.width, srcCanvas.height, targetCtx, false, { path: 'preview', now: t, family });
+      // CAM's internal temporal API is legacy milliseconds; keep the pipeline
+      // step contract in seconds and adapt only at this boundary.
+      _renderCamEngineFrame(srcCanvas, srcCanvas.width, srcCanvas.height, targetCtx, false, { path: 'preview', now: rigT0 + t * 1000, family });
     },
   },
   glitch: {
     label: 'GLITCH',
     renderStep(srcCanvas, targetCtx, params, audio, t) {
       const srcCtx = srcCanvas.getContext('2d');
-      const audioMod = audio ? { bassE: audio.bass, midE: audio.mid, trebE: audio.treble, rms: audio.rms } : null;
       const p = (params && params.glitch) ? params.glitch : null;
-      _applyScrash(srcCtx, targetCtx, srcCanvas.width, srcCanvas.height, t, audioMod, p);
+      _applyScrash(srcCtx, targetCtx, srcCanvas.width, srcCanvas.height, t, audio, p);
     },
   },
   ascii: {
@@ -12531,7 +12540,7 @@ let _vhsLastWarbleAt = 0, _vhsWarbleUntil = 0, _vhsWarbleOffset = 0;
 function _renderVhsStep(srcCanvas, targetCtx, params, audio, t) {
   const w = srcCanvas.width, h = srcCanvas.height;
   const k = Math.max(0, Math.min(100, params.intensity != null ? params.intensity : 50)) / 100;
-  const bass = audio ? audio.bassE : 0, transient = audio ? audio.rms : 0;
+  const bass = audio ? audio.bass : 0, transient = audio ? audio.rms : 0;
   targetCtx.save();
   targetCtx.filter = 'saturate(' + (1 - 0.15 * k).toFixed(2) + ')';
   targetCtx.drawImage(srcCanvas, 0, 0, w, h);
@@ -12565,14 +12574,14 @@ function _renderVhsStep(srcCanvas, targetCtx, params, audio, t) {
     }
   }
 
-  // warble — occasional vertical roll for ~300ms every few seconds
+  // warble — occasional vertical roll for ~300ms every few seconds (t is seconds)
   const warbleAmt = ((params.warble != null ? params.warble : 15) / 100) * k;
   if (warbleAmt > 0.01) {
-    if (t > _vhsWarbleUntil && t - _vhsLastWarbleAt > 3000 + Math.random() * 4000) {
-      _vhsLastWarbleAt = t; _vhsWarbleUntil = t + 300; _vhsWarbleOffset = h * (0.05 + warbleAmt * 0.15);
+    if (t > _vhsWarbleUntil && t - _vhsLastWarbleAt > 3 + Math.random() * 4) {
+      _vhsLastWarbleAt = t; _vhsWarbleUntil = t + 0.3; _vhsWarbleOffset = h * (0.05 + warbleAmt * 0.15);
     }
     if (t < _vhsWarbleUntil) {
-      const roll = Math.round(_vhsWarbleOffset * Math.sin((t - _vhsLastWarbleAt) / 300 * Math.PI));
+      const roll = Math.round(_vhsWarbleOffset * Math.sin((t - _vhsLastWarbleAt) / 0.3 * Math.PI));
       const frame = targetCtx.getImageData(0, 0, w, h);
       targetCtx.putImageData(frame, 0, roll - h);
       targetCtx.putImageData(frame, 0, roll);
@@ -12625,13 +12634,15 @@ function _ensurePipeBuffers(w, h) {
 }
 let _pipeUnknownWarned = false;
 // steps: [{engine:'cam'|'glitch', params:{}}, ...]. sourceCanvas is the pipeline's
-// starting frame (caller resolves video/audio → canvas beforehand). Runs the chain
-// through reused ping-pong buffers (never reads and writes the same canvas in one
-// step) and blits the final result into outCtx, scaled to outCtx.canvas's size.
-function runPipeline(steps, sourceCanvas, outCtx, audio, t) {
+// starting frame (caller resolves video/audio → canvas beforehand). `ts` is always
+// milliseconds from rAF/performance.now(); renderStep receives relative seconds. Runs
+// the chain through reused ping-pong buffers (never reads and writes the same canvas in
+// one step) and blits the final result into outCtx, scaled to outCtx.canvas's size.
+function runPipeline(steps, sourceCanvas, outCtx, audio, ts) {
   const w = sourceCanvas.width, h = sourceCanvas.height;
   if (!w || !h) return;
   _ensurePipeBuffers(w, h);
+  const t = _rigSeconds(ts);
 
   const ctxA = _pipeA.getContext('2d');
   ctxA.clearRect(0, 0, w, h);
@@ -12660,6 +12671,7 @@ function runPipeline(steps, sourceCanvas, outCtx, audio, t) {
 // instead of the normal single-engine render. When off, the normal path is untouched.
 let _pipeTestOn = false;
 let _pipeCamSrc = null;
+const _pipeTestSteps = [{ engine: 'cam' }, { engine: 'glitch', params: { glitch: {} } }];
 window._flipPipeTest = (on) => { _pipeTestOn = !!on; };
 
 // ════════════════════════════════════════════════════════════════════
@@ -14170,6 +14182,13 @@ const FlipAudioReact = {
     return { bass: this._sm.bass, mid: this._sm.mid, treble: this._sm.treble, rms: this._sm.rms, transient };
   }
 };
+
+const FLIP_AUDIO_SILENCE = Object.freeze({ bass: 0, mid: 0, treble: 0, rms: 0, transient: 0 });
+function _readFlipAudioSnapshot(enabled = true) {
+  if (!enabled) return null;
+  const a = FlipAudioReact.read();
+  return Object.freeze({ bass: a.bass, mid: a.mid, treble: a.treble, rms: a.rms, transient: a.transient });
+}
 
 function createCombinedStream(canvasStream, audioEngine) {
   if (!audioEngine || !audioEngine.isInitialized || !audioEngine.recordingDest) return canvasStream;
@@ -18637,7 +18656,7 @@ async function startExtAudio(deviceId) {
         document.getElementById('wmpPerm').classList.remove('visible');
         if (!wmpRunning) { wmpRunning = true; requestAnimationFrame(wmpLoop); }
       } else if (activeTab === 'scrash') {
-        if (!scrashRunning) { scrashRunning = true; _scrStartT = null; }
+        if (!scrashRunning) scrashRunning = true;
         if (!_scrashLoopAlive && !_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
       } else if (activeTab === 'fusion') {
         fusionRunning = true;
@@ -18909,10 +18928,11 @@ function _stopMicLevelFeedback() {
 // ════════════════════════════════════════════════════════════════════
 let scrChromaVal = 0, scrDripVal = 0, scrNeonVal = 0, scrWaveVal = 0, scrCrushVal = 0;
 let scrHueVal = 0, scrGrainVal = 0, scrChaosVal = 0;
-// EXT AUDIO: master intensity (0-300%) for the audio-reactive bindings in _applyScrash, plus the
-// transient "burst" envelope (0..1, decays ~200ms) that spikes DRIP/CHAOS on hits.
+// EXT AUDIO: master intensity (0-300%) for the audio-reactive bindings in _applyScrash.
+// Runtime burst state lives on each layer params object, never in a shared global.
 let scrAudioReactVal = 100;
-let _scrBurst = 0;
+const _scrTabLayerParams = {};
+const SCR_BURST_TAU = 0.18;
 let scrPyPal = 'none'; // 'none' | 'py' | 'spy' | 'ide'
 const SCR_PY_PALETTES = {
   py:  [[55,118,171],[255,212,59]],
@@ -18930,7 +18950,7 @@ let scrAnimateOn = false, scrSpeedVal = 5;
 let scrashRunning = false;
 let scrashCamMode = 'foto'; // 'foto' | 'video'
 let scrashRecorder = null, scrashRecMime = '', scrashRecGeneration = 0;
-let _scrRafId = null, _scrStartT = null;
+let _scrRafId = null;
 
 const scrashCvs = document.getElementById('scrashCanvas');
 const ctxScrash = scrashCvs.getContext('2d', { willReadFrequently: true });
@@ -19048,7 +19068,6 @@ let _ctxScrAudioBuf;
     document.getElementById('btnScrashAnimate').classList.toggle('active', scrAnimateOn);
     _syncScrashEditorPane();
     if (scrashRunning && scrAnimateOn && !_scrashLoopAlive && !_scrRafId) {
-      _scrStartT = null;
       _scrRafId = requestAnimationFrame(_scrashLoop);
     }
   });
@@ -19158,47 +19177,56 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
   const { data: px } = srcCtx.getImageData(0, 0, w, h);
   const out = new Uint8ClampedArray(w * h * 4);
 
-  // Per-call param base: defaults to the global GLITCH tab sliders (`scr*Val`) unchanged, or
-  // an explicit params object `p` (used by EDIT layers so each GLITCH layer is independent —
-  // see FLIP_STEP_ENGINES.glitch.renderStep). Without `p`, behavior is byte-identical to before.
-  const P = p || {
-    chroma: scrChromaVal, drip: scrDripVal, neon: scrNeonVal, wave: scrWaveVal,
-    crush: scrCrushVal, hue: scrHueVal, grain: scrGrainVal, chaos: scrChaosVal,
-    audioReact: scrAudioReactVal, animate: scrAnimateOn, speed: scrSpeedVal
-  };
+  // P is both the layer's parameter bag and its runtime-state owner. Empty P objects
+  // inherit the GLITCH tab globals, which gives TAB/FUSION/test rigs independent state
+  // without duplicating the UI values. Runtime state is non-enumerable so persistence
+  // remains limited to user-facing params.
+  const P = p || _scrTabLayerParams;
+  const chromaBase = P.chroma ?? scrChromaVal, dripBase = P.drip ?? scrDripVal;
+  const neonBase = P.neon ?? scrNeonVal, waveBase = P.wave ?? scrWaveVal;
+  const crushBase = P.crush ?? scrCrushVal, hueBase = P.hue ?? scrHueVal;
+  const grainBase = P.grain ?? scrGrainVal, chaosBase = P.chaos ?? scrChaosVal;
+  const audioReactBase = P.audioReact ?? scrAudioReactVal;
+  const animate = P.animate ?? scrAnimateOn, speed = P.speed ?? scrSpeedVal;
 
   // EXT AUDIO: additive modulation of a few params on top of the base values —
   // base is never overwritten, only nudged so the music is visibly felt. AUDIO REACT
   // (P.audioReact, 0-300%) is the master intensity I on top of that. A is null when
   // there's no audioMod (no ext audio) so every audio term below is exactly 0 — no regression.
-  let chromaEff = P.chroma, waveEff = P.wave, grainEff = P.grain;
-  let dripEff = P.drip, chaosEff = P.chaos, hueSpeedExtra = 0;
+  let chromaEff = chromaBase, waveEff = waveBase, grainEff = grainBase;
+  let dripEff = dripBase, chaosEff = chaosBase, hueSpeedExtra = 0;
   let A = null;
   if (audioMod) {
-    A = FlipAudioReact.read();
-    const I = P.audioReact / 100;
+    A = audioMod;
+    const I = audioReactBase / 100;
     // K's: bass→wave 22, (mid+transient)→chroma 28, treble→hue-spin 90 deg/s, treble→grain 45.
-    waveEff   = Math.min(40,  P.wave   + A.bass * 22 * I);               // cap raised 30→40 for audio-driven boost only
-    chromaEff = Math.min(50,  P.chroma + (A.mid + A.transient) * 28 * I);
-    grainEff  = Math.min(100, P.grain  + A.treble * 45 * I);
+    waveEff   = Math.min(40,  waveBase   + A.bass * 22 * I);               // cap raised 30→40 for audio-driven boost only
+    chromaEff = Math.min(50,  chromaBase + (A.mid + A.transient) * 28 * I);
+    grainEff  = Math.min(100, grainBase  + A.treble * 45 * I);
     hueSpeedExtra = A.treble * 90 * I;
-    // Transient burst envelope: retrigger to full on a hit, exponential decay (~200ms @30fps).
-    if (A.transient > 0.45) _scrBurst = 1;
-    dripEff  = Math.min(100, P.drip  + _scrBurst * 35 * I);
-    chaosEff = Math.min(100, P.chaos + _scrBurst * 30 * I);
-    _scrBurst *= 0.82;
+    let S = P._scrRuntime;
+    if (!S) {
+      S = { burst: 0, lastT: t };
+      Object.defineProperty(P, '_scrRuntime', { value: S, enumerable: false });
+    }
+    const dt = Math.max(0, t - S.lastT);
+    S.lastT = t;
+    S.burst *= Math.exp(-dt / SCR_BURST_TAU);
+    if (A.transient > 0.45) S.burst = 1;
+    dripEff  = Math.min(100, dripBase  + S.burst * 35 * I);
+    chaosEff = Math.min(100, chaosBase + S.burst * 30 * I);
   }
 
-  const animT    = t * P.speed * 0.02;
-  const cOff     = P.animate ? ((Math.sin(animT * 1.3) * 0.5 + 0.5) * chromaEff) | 0 : chromaEff | 0;
-  const waveAmp  = P.animate ? (Math.sin(animT * 0.8)  * 0.5 + 0.5) * waveEff   : waveEff;
-  const crushT   = (P.crush / 100) * 255;
-  const neonT    = P.neon / 100;
+  const animT    = t * speed * 0.02;
+  const cOff     = animate ? ((Math.sin(animT * 1.3) * 0.5 + 0.5) * chromaEff) | 0 : chromaEff | 0;
+  const waveAmp  = animate ? (Math.sin(animT * 0.8)  * 0.5 + 0.5) * waveEff   : waveEff;
+  const crushT   = (crushBase / 100) * 255;
+  const neonT    = neonBase / 100;
   const dripT    = dripEff / 100;
   // Multi-layer waves: on a strong bass hit (A.bass > 0.6), stack up to 2 extra desynced
   // waves on top of the primary one (hard cap 3 layers total) — "more waves", not just bigger.
   const extraWaves = !!(A && A.bass > 0.6);
-  const hueEff = P.hue + hueSpeedExtra * t;
+  const hueEff = hueBase + hueSpeedExtra * t;
 
   for (let y = 0; y < h; y++) {
     let waveX = 0;
@@ -19279,10 +19307,7 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
   dstCtx.putImageData(new ImageData(out, w, h), 0, 0);
 }
 
-// Reads band energies (bass/mid/treble/rms, each 0..1) off a given AnalyserNode. Shared by
-// _renderScrashAudioSource (audio-only source painting) and the camera branch of _scrashLoop
-// (so a live camera feed can ALSO be modulated by _applyScrash's audioMod when ext audio runs
-// alongside the camera).
+// Reads band energies (bass/mid/treble/rms, each 0..1) for the audio-only source painting.
 function _scrashComputeBands(freqData, timeData) {
   const freqN = freqData.length;
   const bassEnd = Math.max(1, Math.floor(freqN * 0.08));
@@ -19299,20 +19324,13 @@ function _scrashComputeBands(freqData, timeData) {
   rms = Math.min(1, Math.sqrt(rms / timeData.length) * 3);
   return { bassE, midE, trebE, rms };
 }
-function _scrashReadAudioBands(an) {
-  const freqData = new Uint8Array(an.frequencyBinCount);
-  const timeData = new Uint8Array(an.fftSize);
-  an.getByteFrequencyData(freqData);
-  an.getByteTimeDomainData(timeData);
-  return _scrashComputeBands(freqData, timeData);
-}
 
 // EXT AUDIO / MIC: paints an audio-reactive source image into _ctxScrTmp when there's no camera
 // frame. Field of stacked horizontal wave bands fills the WHOLE frame (not just the edges), a
 // full-width time-domain waveform overlay, radial fade+zoom persistence (trails flow inward
-// instead of scrolling off one side), and a transient flash. Returns band energies so
-// _applyScrash can additively modulate a few params.
-function _renderScrashAudioSource(w, h, t) {
+// instead of scrolling off one side), and a transient flash. The immutable audio
+// snapshot is shared with _applyScrash; this function never advances FlipAudioReact.
+function _renderScrashAudioSource(w, h, t, audio) {
   const an = extAnalyser;
   const freqN = an.frequencyBinCount;
   const freqData = new Uint8Array(freqN);
@@ -19321,8 +19339,7 @@ function _renderScrashAudioSource(w, h, t) {
   an.getByteTimeDomainData(timeData);
 
   const { bassE, midE, trebE, rms } = _scrashComputeBands(freqData, timeData);
-  const react = (typeof FlipAudioReact !== 'undefined') ? FlipAudioReact.read() : null;
-  const transient = react ? react.transient : 0;
+  const transient = audio ? audio.transient : 0;
 
   if (_scrAudioBuf.width !== w || _scrAudioBuf.height !== h) {
     _scrAudioBuf.width = w; _scrAudioBuf.height = h;
@@ -19397,16 +19414,14 @@ function _renderScrashAudioSource(w, h, t) {
 
   _ctxScrTmp.clearRect(0, 0, w, h);
   _ctxScrTmp.drawImage(_scrAudioBuf, 0, 0);
-
-  return { bassE, midE, trebE, rms };
 }
 
-function _scrashLoop(t) {
+function _scrashLoop(ts) {
   if (!scrashRunning) { _scrashLoopAlive = false; _scrRafId = null; return; }
   _scrashLoopAlive = true;
-  if (_scrStartT === null) _scrStartT = t;
-  const elapsed = (t - _scrStartT) / 1000;
+  const t = _rigSeconds(ts);
   const SW = scrashCvs.width, SH = scrashCvs.height;
+  const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
 
   if (vid.videoWidth) {
     // Draw video fitting the canvas (letterbox — show full image, no crop)
@@ -19418,11 +19433,10 @@ function _scrashLoop(t) {
     _ctxScrTmp.drawImage(vid, dx, dy, dw, dh);
     // Camera + ext audio simultaneously: also feed audioMod so the live feed reacts to the music.
     // F4: incluye extMicOnlyMode — mic móvil modula GLITCH sin apagar la cámara.
-    const camAudioMod = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? _scrashReadAudioBands(extAnalyser) : undefined;
-    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed, camAudioMod);
+    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, t, audio, _scrTabLayerParams);
   } else if ((extAudioMode || extMicOnlyMode) && extAnalyser) {
-    const audioMod = _renderScrashAudioSource(SW, SH, elapsed);
-    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, elapsed, audioMod);
+    _renderScrashAudioSource(SW, SH, t, audio);
+    _applyScrash(_ctxScrTmp, ctxScrash, SW, SH, t, audio, _scrTabLayerParams);
   }
 
   _scrRafId = requestAnimationFrame(_scrashLoop);
@@ -19430,7 +19444,6 @@ function _scrashLoop(t) {
 
 function enterScrash() {
   scrashRunning = true;
-  _scrStartT = null;
   if (!_scrashLoopAlive && !_scrRafId) _scrRafId = requestAnimationFrame(_scrashLoop);
 }
 
@@ -21019,6 +21032,7 @@ if (screen.width > 768) {
 let fusionRunning = false;
 let _fusionSrc = null;
 let _fusionLastFrameMs = 0;
+const _fusionPipelineSteps = [{ engine: 'cam' }, { engine: 'glitch', params: { glitch: {} } }];
 const fusionCanvas = document.getElementById('fusionCanvas');
 const ctxFusion = fusionCanvas.getContext('2d');
 
@@ -21049,11 +21063,11 @@ function _fusionLoop(ts) {
     const srcCanvas = _fusionGetSrcCanvas();
     if (srcCanvas) {
       runPipeline(
-        [{ engine: 'cam' }, { engine: 'glitch' }],
+        _fusionPipelineSteps,
         srcCanvas,
         ctxFusion,
         // F4: en móvil el MIC modula FUSION sin reemplazar la cámara (extMicOnlyMode).
-        ((extAudioMode || extMicOnlyMode) && extAnalyser) ? FlipAudioReact.read() : null,
+        _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser),
         ts
       );
     }
@@ -21271,7 +21285,7 @@ function _editDrawCover(ctx, srcEl, sw, sh, w, h) {
   ctx.drawImage(srcEl, (w - dw) / 2, (h - dh) / 2, dw, dh);
 }
 
-function _editGetSrcCanvas() {
+function _editGetSrcCanvas(audio, ts) {
   const w = 640, h = 480;
   if (!_editSrcCanvas) _editSrcCanvas = document.createElement('canvas');
   if (_editSrcCanvas.width !== w || _editSrcCanvas.height !== h) { _editSrcCanvas.width = w; _editSrcCanvas.height = h; }
@@ -21301,11 +21315,11 @@ function _editGetSrcCanvas() {
     return _getExtAudioSourceFrame(w, h);
   }
   if (editSource.type === 'sono') {
-    _editRenderSonoSource(ctx, w, h, performance.now());
+    _editRenderSonoSource(ctx, w, h, ts, audio);
     return _editSrcCanvas;
   }
   if (editSource.type === 'wmp') {
-    _editRenderWmpSource(ctx, w, h, performance.now());
+    _editRenderWmpSource(ctx, w, h, ts);
     return _editSrcCanvas;
   }
   return null;
@@ -21313,13 +21327,12 @@ function _editGetSrcCanvas() {
 
 // ── Generative SOURCE renders (BLOQUE 5) — self-contained, inspired by
 // sonoLoop/wmpLoop but NOT reusing them (those paint their own canvases via
-// a lot of tab-local state). Both read FlipAudioReact.read() (bass/mid/
-// treble/rms) and extAnalyser.getByteFrequencyData when available, so they
-// animate with no camera at all.
-function _editRenderSonoSource(ctx, w, h, t) {
+// a lot of tab-local state). They consume the loop's immutable audio snapshot
+// and extAnalyser data when available, so they animate with no camera at all.
+function _editRenderSonoSource(ctx, w, h, t, audio) {
   ctx.fillStyle = '#050506';
   ctx.fillRect(0, 0, w, h);
-  const A = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? FlipAudioReact.read() : { bass: 0, mid: 0, treble: 0, rms: 0 };
+  const A = audio || FLIP_AUDIO_SILENCE;
   const cx = w / 2, cy = h / 2;
   const baseR = Math.min(w, h) * 0.18;
   ctx.save();
@@ -21379,10 +21392,10 @@ function _editLoop(ts) {
   _editLoopAlive = true;
   const minInterval = 1000 / 30;
   if (ts - _editLastFrameMs >= minInterval) {
-    const srcCanvas = _editGetSrcCanvas();
+    const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
+    const srcCanvas = _editGetSrcCanvas(audio, ts);
     if (srcCanvas) {
       const steps = editSteps.filter(s => s.on).map(s => ({ engine: s.engine, params: _editStepParams(s) }));
-      const audio = ((extAudioMode || extMicOnlyMode) && extAnalyser) ? FlipAudioReact.read() : null;
       runPipeline(steps, srcCanvas, ctxEdit, audio, ts);
     }
     _editLastFrameMs = ts;
@@ -21863,7 +21876,7 @@ function _stageDefaultVhs() {
 function _stageDefaultState() {
   return {
     source: { cam: true, audioMode: 'off', audioDeviceId: null },
-    pipeline: [{ engine: 'glitch', on: true }],
+    pipeline: [{ engine: 'glitch', on: true, params: _editDefaultGlitchParams() }],
     vhs: _stageDefaultVhs(),
   };
 }
@@ -21908,7 +21921,10 @@ function _stageClampState(s) {
 }
 function _stagePipelineStepParams(step) {
   if (step.engine === 'cam') return { family: step.family };
-  if (step.engine === 'glitch') return { glitch: step.params || _editDefaultGlitchParams() };
+  if (step.engine === 'glitch') {
+    if (!step.params) step.params = _editDefaultGlitchParams();
+    return { glitch: step.params };
+  }
   if (step.engine === 'ascii') return step.params || _editDefaultAsciiParams();
   if (step.engine === 'flowblob') return step.params || _editDefaultFlowParams();
   return {};
@@ -22098,19 +22114,20 @@ function _stagePipelineForRender(state) {
   const stagePreviewCanvas = document.getElementById('stagePreviewCanvas');
   const ctxStagePreview = stagePreviewCanvas ? stagePreviewCanvas.getContext('2d') : null;
   let _stagePreviewSrc = null;
-  function _stagePreviewGetSrc(w, h) {
+  function _stagePreviewGetSrc(w, h, ts, audio) {
     if (!_stagePreviewSrc) _stagePreviewSrc = document.createElement('canvas');
     if (_stagePreviewSrc.width !== w || _stagePreviewSrc.height !== h) { _stagePreviewSrc.width = w; _stagePreviewSrc.height = h; }
     const ctx = _stagePreviewSrc.getContext('2d');
-    _editRenderSonoSource(ctx, w, h, performance.now());
+    _editRenderSonoSource(ctx, w, h, ts, audio);
     return _stagePreviewSrc;
   }
   let _stagePreviewRunning = false;
-  function _stagePreviewLoop() {
+  function _stagePreviewLoop(ts) {
     if (!_stagePreviewRunning) return;
     if (ctxStagePreview) {
-      const src = _stagePreviewGetSrc(320, 240);
-      runPipeline(_stagePipelineForRender(_stageCtlState), src, ctxStagePreview, null, performance.now());
+      const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
+      const src = _stagePreviewGetSrc(320, 240, ts, audio);
+      runPipeline(_stagePipelineForRender(_stageCtlState), src, ctxStagePreview, audio, ts);
     }
     requestAnimationFrame(_stagePreviewLoop);
   }
@@ -22405,7 +22422,7 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
     const t0 = performance.now();
     const srcCanvas = _outGetSrcCanvas();
     if (srcCanvas) {
-      const audio = extAnalyser ? FlipAudioReact.read() : null;
+      const audio = _readFlipAudioSnapshot(!!extAnalyser);
       runPipeline(_stagePipelineForRender(state), srcCanvas, ctxOut, audio, ts);
     }
     _outTrackBudget(performance.now() - t0);
