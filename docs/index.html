@@ -12392,6 +12392,7 @@ function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
     _asciiStepCtx = _asciiStepCv.getContext('2d', { willReadFrequently: true });
   }
   const tctx = _asciiStepCtx;
+  tctx.clearRect(0, 0, SW, SH); // el canvas cacheado retendria el frame anterior con fuentes alfa
   tctx.drawImage(srcCanvas, 0, 0, SW, SH);
   const { data: px } = tctx.getImageData(0, 0, SW, SH);
 
