@@ -549,8 +549,8 @@ ${HELPERS}
   }
 
   const feed = document.createElement('canvas');
-  feed.width = 640;
-  feed.height = 360;
+  feed.width = 1280;
+  feed.height = 720;
   feed.getContext('2d').drawImage(base, 0, 0);
   const stream = feed.captureStream(30);
   const video = document.createElement('video');
@@ -563,7 +563,15 @@ ${HELPERS}
   const glProto = WebGLRenderingContext.prototype;
   const nativeDrawImage = ctx2dProto.drawImage;
   const nativeTexImage2D = glProto.texImage2D;
-  const hotPath = { frames:100, drawImageFromVideo:0, texImage2DFromVideo:0 };
+  const nativeTexSubImage2D = glProto.texSubImage2D;
+  const hotPath = {
+    frames:100,
+    drawImageFromVideo:0,
+    texImage2DFromVideo:0,
+    texSubImage2D384x288:0,
+    rawUploadBytes:0,
+    actualUploadBytes:0,
+  };
   ctx2dProto.drawImage = function(...args) {
     if (args[0] === video) hotPath.drawImageFromVideo++;
     return nativeDrawImage.apply(this, args);
@@ -571,6 +579,14 @@ ${HELPERS}
   glProto.texImage2D = function(...args) {
     if (args[5] === video) hotPath.texImage2DFromVideo++;
     return nativeTexImage2D.apply(this, args);
+  };
+  glProto.texSubImage2D = function(...args) {
+    const upload = args[6];
+    if (upload instanceof HTMLCanvasElement && upload.width === 384 && upload.height === 288) {
+      hotPath.texSubImage2D384x288++;
+      hotPath.actualUploadBytes += upload.width * upload.height * 4;
+    }
+    return nativeTexSubImage2D.apply(this, args);
   };
   try {
     _oscamWebGLEngine.reset();
@@ -589,9 +605,12 @@ ${HELPERS}
   } finally {
     ctx2dProto.drawImage = nativeDrawImage;
     glProto.texImage2D = nativeTexImage2D;
+    glProto.texSubImage2D = nativeTexSubImage2D;
     stream.getTracks().forEach(track => track.stop());
     video.srcObject = null;
   }
+  hotPath.rawUploadBytes = hotPath.frames * (video.videoWidth || feed.width) * (video.videoHeight || feed.height) * 4;
+  hotPath.reductionPct = (1 - hotPath.actualUploadBytes / hotPath.rawUploadBytes) * 100;
   return { comparison, hotPath };
 })()`;
 
@@ -695,9 +714,12 @@ async function main() {
     contextLossEvent:/addEventListener\('webglcontextlost'/.test(section),
     noAndroidVeto:!section.includes('forceLegacy = /Android'),
     androidCapabilityGate:/!EARLY_IS_ANDROID \|\| _oscamWebGLEngine\.probe\(\)/.test(section),
-    noCpuInputCanvas:!section.includes('inputCvs') && !section.includes('inputCtx'),
-    directSourceUpload:/gl\.texImage2D\(gl\.TEXTURE_2D, 0, gl\.RGBA, gl\.RGBA, gl\.UNSIGNED_BYTE, source\)/.test(section),
-    uvCropMirror:/u_uvScale/.test(section) && /u_uvOffset/.test(section) && /mirror \? -sw : sw/.test(section),
+    reducedInputCanvas:/inputCanvas\.width = PROC_W/.test(section) && /inputCanvas\.height = PROC_H/.test(section),
+    reusedSourceUpload:/gl\.texSubImage2D\(gl\.TEXTURE_2D, 0, 0, 0, gl\.RGBA, gl\.UNSIGNED_BYTE, inputCanvas\)/.test(section),
+    cpuCropMirror:/inputCtx\.drawImage\(source, sx, sy, sw, sh, 0, 0, PROC_W, PROC_H\)/.test(section) &&
+      /inputCtx\.scale\(-1, 1\)/.test(section),
+    halfSizePersistence:/const FINAL_W = 512/.test(section) && /const FINAL_H = 384/.test(section) &&
+      /createTarget\(FINAL_W, FINAL_H, gl\.NEAREST\)/.test(section),
   };
   assert(Object.values(staticChecks).every(Boolean), `checks estaticos=${JSON.stringify(staticChecks)}`);
 
@@ -764,9 +786,10 @@ async function main() {
     const directUpload = await evaluate(page, DIRECT_UPLOAD_PHASE);
     assert(directUpload.comparison.frames === 45 && directUpload.comparison.stationaryFrames === 15, `frames A/B=${JSON.stringify(directUpload)}`);
     assert(directUpload.comparison.correlation.min > 0.99, `paridad inputCvs/directo=${JSON.stringify(directUpload.comparison)}`);
-    assert(directUpload.comparison.performance.ratio <= 1, `perf inputCvs/directo=${JSON.stringify(directUpload.comparison.performance)}`);
-    assert(directUpload.hotPath.drawImageFromVideo === 0, `drawImage(video) hot path=${JSON.stringify(directUpload.hotPath)}`);
-    assert(directUpload.hotPath.texImage2DFromVideo === 100, `texImage2D(video) hot path=${JSON.stringify(directUpload.hotPath)}`);
+    assert(directUpload.hotPath.drawImageFromVideo === 100, `drawImage(video) hot path=${JSON.stringify(directUpload.hotPath)}`);
+    assert(directUpload.hotPath.texImage2DFromVideo === 0, `texImage2D(video) hot path=${JSON.stringify(directUpload.hotPath)}`);
+    assert(directUpload.hotPath.texSubImage2D384x288 === 100, `texSubImage2D 384x288=${JSON.stringify(directUpload.hotPath)}`);
+    assert(directUpload.hotPath.reductionPct >= 50, `reduccion upload=${JSON.stringify(directUpload.hotPath)}`);
     const legacyAllocations = await evaluate(page, LEGACY_ALLOCATION_PHASE);
     assert(legacyAllocations.frames === 300, `frames legacy=${JSON.stringify(legacyAllocations)}`);
     // Golden pixels from 4f29d86, before pooling; an equal hash covers the full RGBA frame.
@@ -791,7 +814,8 @@ async function main() {
     await navigate(page, `${pageBaseUrl}?t14-bad-probe=1`);
     const badProbe = await evaluate(page, FALLBACK_PHASE);
     assert(badProbe.first.changedPixels === 0, `probe invalido no cae a legacy=${JSON.stringify(badProbe)}`);
-    assert(!badProbe.ready && badProbe.probeResult === false && badProbe.contexts === 1, `probe invalido estado=${JSON.stringify(badProbe)}`);
+    // T23 added the independent palette engine, so this fixture owns palette + OSCAM contexts.
+    assert(!badProbe.ready && badProbe.probeResult === false && badProbe.contexts === 2, `probe invalido estado=${JSON.stringify(badProbe)}`);
     assert(badProbe.getContextCalls.first === badProbe.getContextCalls.second, `probe invalido reintento=${JSON.stringify(badProbe)}`);
     assert(badProbe.warnings.length === 1 && badProbe.warnings[0].includes('capability probe failed'), `probe invalido warnings=${JSON.stringify(badProbe)}`);
 

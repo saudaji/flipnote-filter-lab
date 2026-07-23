@@ -2509,10 +2509,10 @@
         display:flex; align-items:center; justify-content:center; text-align:center;
         position:fixed; top:calc(148px + env(safe-area-inset-top, 0px)); right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
         width:44px; height:44px; border-radius:50%;
-        background:rgba(26,26,30,0.92); border:1px solid rgba(255,255,255,0.14);
+        background:#1a1a1e; border:1px solid rgba(255,255,255,0.14);
         color:#F0EDE6; font-family:monospace; font-size:8px; letter-spacing:0.5px; line-height:1.15;
         padding:2px; cursor:pointer;
-        backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+        backdrop-filter:none; -webkit-backdrop-filter:none;
       }
       body.ext-audio #btnAudioIO, #btnAudioIO.active { color:var(--paper); border-color:var(--paper); }
       #audioIOPanel {
@@ -2837,6 +2837,9 @@
       #camControlInner {
         width:100%;
         gap:6px;
+        background:#04080a;
+        backdrop-filter:none;
+        -webkit-backdrop-filter:none;
       }
       #camDockMeta {
         gap:6px;
@@ -2857,6 +2860,16 @@
       }
       .pcs-slot {
         width:calc((100% - 8px) / 5);
+      }
+      #btnMicMobile {
+        background:#1a1a1e;
+        backdrop-filter:none;
+        -webkit-backdrop-filter:none;
+      }
+      #flipExportBar {
+        background:#080808;
+        backdrop-filter:none;
+        -webkit-backdrop-filter:none;
       }
     }
     @media (max-height:500px) {
@@ -6190,7 +6203,7 @@ function _renderDitheredCore(source, srcW, srcH, targetCtx, mirror, autoLevels, 
         minLuma:base,
         lumaRange:range,
       })) {
-    targetCtx.drawImage(_camPaletteWebGLEngine.getResultCanvas(), 0, 0, outW, outH);
+    _drawCamSource(_camPaletteWebGLEngine.getResultSource(), targetCtx, 0, 0, outW, outH);
     if (outScan) targetCtx.drawImage(outScan, 0, 0, outW, outH);
     return;
   }
@@ -6339,31 +6352,13 @@ function _getDolphinCaptureSampleDims(options = {}) {
 }
 function _drawDolphinCoreResult(sampleCanvas, targetCtx, outW, outH, outScan, isLgcy) {
   targetCtx.imageSmoothingEnabled = false;
-  targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+  _drawCamSource(sampleCanvas, targetCtx, 0, 0, outW, outH);
 
   const baseGlow = isLgcy ? dlpResonanceVal * 0.7 / 100 : dlpResonanceVal / 100;
-  const glowBlur = isLgcy ? '1.5px' : '3px';
-  if (baseGlow > 0.01) {
-    targetCtx.save();
-    targetCtx.globalCompositeOperation = 'screen';
-    targetCtx.globalAlpha = baseGlow;
-    targetCtx.filter = `blur(${glowBlur})`;
-    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
-    targetCtx.filter = 'none';
-    targetCtx.globalAlpha = 1;
-    targetCtx.globalCompositeOperation = 'source-over';
-    targetCtx.restore();
-  }
-  if (isLgcy) {
-    targetCtx.save();
-    targetCtx.globalCompositeOperation = 'screen';
-    targetCtx.globalAlpha = 0.08;
-    targetCtx.filter = 'none';
-    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
-    targetCtx.globalAlpha = 1;
-    targetCtx.globalCompositeOperation = 'source-over';
-    targetCtx.restore();
-  }
+  const glowPasses = [];
+  if (baseGlow > 0.01) glowPasses.push({ alpha:baseGlow, blurPx:isLgcy ? 1.5 : 3 });
+  if (isLgcy) glowPasses.push({ alpha:0.08, blurPx:0 });
+  _drawCamSampleGlow(sampleCanvas, targetCtx, outW, outH, glowPasses);
   if (outScan) targetCtx.drawImage(outScan, 0, 0, outW, outH);
 }
 function _renderDolphinCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
@@ -6401,7 +6396,7 @@ function _renderDolphinCore(source, srcW, srcH, targetCtx, mirror, options = {})
         palette:COLS,
         contrast:dlpContrastVal / 100,
       })) {
-    _drawDolphinCoreResult(_camPaletteWebGLEngine.getResultCanvas(), targetCtx, outW, outH, outScan, isLgcy);
+    _drawDolphinCoreResult(_camPaletteWebGLEngine.getResultSource(), targetCtx, outW, outH, outScan, isLgcy);
     return;
   }
 
@@ -6467,6 +6462,67 @@ function _mixRGB(a, b, t) {
   ];
 }
 
+// Glow stays at the CAM core's sample resolution. Multiple blur passes are
+// composited over black and promoted to the output only once with NEAREST.
+const _camGlowTargetCache = new Map();
+function _getCamSourceRect(source) {
+  const canvas = source && source.canvas ? source.canvas : source;
+  return {
+    canvas,
+    sx:source && source.canvas ? source.sx : 0,
+    sy:source && source.canvas ? source.sy : 0,
+    sw:source && source.canvas ? source.sw : canvas.width,
+    sh:source && source.canvas ? source.sh : canvas.height,
+  };
+}
+function _drawCamSource(source, targetCtx, x, y, w, h) {
+  const rect = _getCamSourceRect(source);
+  targetCtx.drawImage(rect.canvas, rect.sx, rect.sy, rect.sw, rect.sh, x, y, w, h);
+}
+function _drawCamSampleGlow(sampleSource, targetCtx, outW, outH, passes) {
+  if (!sampleSource || !passes || !passes.length) return;
+  const source = _getCamSourceRect(sampleSource);
+  const sampleW = Math.max(1, source.sw);
+  const sampleH = Math.max(1, source.sh);
+  const key = `${sampleW}x${sampleH}`;
+  let target = _camGlowTargetCache.get(key);
+  if (!target) {
+    const canvas = document.createElement('canvas');
+    canvas.width = sampleW;
+    canvas.height = sampleH;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    target = { canvas, ctx };
+    _camGlowTargetCache.set(key, target);
+  }
+  const { canvas, ctx } = target;
+  const radiusScale = Math.min(sampleW / Math.max(1, outW), sampleH / Math.max(1, outH));
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.filter = 'none';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, sampleW, sampleH);
+  ctx.globalCompositeOperation = 'screen';
+  for (const pass of passes) {
+    if (!(pass.alpha > 0)) continue;
+    const radius = Math.max(0, pass.blurPx * radiusScale);
+    ctx.globalAlpha = pass.alpha;
+    ctx.filter = radius > 0.001 ? `blur(${radius.toFixed(3)}px)` : 'none';
+    ctx.drawImage(source.canvas, source.sx, source.sy, source.sw, source.sh, 0, 0, sampleW, sampleH);
+  }
+  ctx.restore();
+
+  targetCtx.save();
+  targetCtx.imageSmoothingEnabled = false;
+  targetCtx.globalCompositeOperation = 'screen';
+  targetCtx.globalAlpha = 1;
+  targetCtx.filter = 'none';
+  targetCtx.drawImage(canvas, 0, 0, outW, outH);
+  targetCtx.restore();
+}
+
 // Dedicated WebGL context for the palette-based CAM cores. Resources live only
 // in this context; GLITCH and OSCAM keep their own canvases, programs and targets.
 // Every pass renders at the CPU core's sample resolution. The caller performs the
@@ -6479,7 +6535,7 @@ const _camPaletteWebGLEngine = (() => {
   let program = null;
   let copyProgram = null;
   let quad = null;
-  let resultCanvas = null;
+  const resultSource = { canvas, sx:0, sy:0, sw:1, sh:1 };
   let ready = false;
   let failed = false;
   let warned = false;
@@ -6605,8 +6661,12 @@ const _camPaletteWebGLEngine = (() => {
     precision highp float;
     varying vec2 v_uv;
     uniform sampler2D u_source;
+    uniform vec2 u_output_size;
+    uniform vec2 u_output_offset;
     void main() {
-      gl_FragColor = texture2D(u_source, v_uv);
+      vec2 halfTexel = 0.5 / u_output_size;
+      vec2 uv = (gl_FragCoord.xy - u_output_offset) / u_output_size;
+      gl_FragColor = texture2D(u_source, clamp(uv, halfTexel, 1.0 - halfTexel));
     }
   `;
 
@@ -6672,24 +6732,17 @@ const _camPaletteWebGLEngine = (() => {
     const key = `${w}x${h}`;
     let target = renderTargetCache.get(key);
     if (!target) {
-      const output = document.createElement('canvas');
-      output.width = w;
-      output.height = h;
-      const outputCtx = output.getContext('2d');
-      outputCtx.imageSmoothingEnabled = false;
       target = {
         sourceTex:createTexture(w, h),
         outputTarget:createTarget(w, h),
-        output,
-        outputCtx,
         w,
         h,
       };
       renderTargetCache.set(key, target);
     }
-    if (canvas.width < w || canvas.height < h) {
-      canvas.width = Math.max(canvas.width, w);
-      canvas.height = Math.max(canvas.height, h);
+    if (canvas.width < w + 2 || canvas.height < h + 2) {
+      canvas.width = Math.max(canvas.width, w + 2);
+      canvas.height = Math.max(canvas.height, h + 2);
     }
     return target;
   }
@@ -6728,7 +6781,7 @@ const _camPaletteWebGLEngine = (() => {
       copyProgram = makeProgram(copyFrag);
       const commonNames = ['u_source', 'u_size', 'u_auto_levels', 'u_min_luma', 'u_luma_range'];
       cacheLocations(program, commonNames.concat(['u_mode', 'u_contrast', 'u_col0', 'u_col1', 'u_col2', 'u_col3', 'u_col4', 'u_col5', 'u_col6']));
-      cacheLocations(copyProgram, ['u_source']);
+      cacheLocations(copyProgram, ['u_source', 'u_output_size', 'u_output_offset']);
       ready = true;
       return true;
     } catch (err) {
@@ -6766,14 +6819,17 @@ const _camPaletteWebGLEngine = (() => {
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, w, h);
+      gl.viewport(0, 0, w + 2, h + 2);
       useProgram(copyProgram);
       bindTexture(copyProgram, 'u_source', target.outputTarget.texture, 0);
+      gl.uniform2f(loc(copyProgram, 'u_output_size'), w, h);
+      gl.uniform2f(loc(copyProgram, 'u_output_offset'), 1, 1);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       gl.flush();
-      target.outputCtx.clearRect(0, 0, w, h);
-      target.outputCtx.drawImage(canvas, 0, canvas.height - h, w, h, 0, 0, w, h);
-      resultCanvas = target.output;
+      resultSource.sx = 1;
+      resultSource.sy = canvas.height - h - 1;
+      resultSource.sw = w;
+      resultSource.sh = h;
       return true;
     } catch (err) {
       if (!warned) {
@@ -6787,8 +6843,8 @@ const _camPaletteWebGLEngine = (() => {
   }
   // Compatibility-only no-op: E-INK history now exists exclusively in the CPU core.
   function resetEInk() {}
-  function getResultCanvas() {
-    return resultCanvas;
+  function getResultSource() {
+    return resultSource;
   }
   canvas.addEventListener('webglcontextlost', event => {
     event.preventDefault();
@@ -6797,7 +6853,7 @@ const _camPaletteWebGLEngine = (() => {
     failed = true;
     ready = false;
   });
-  return { canvas, render, getResultCanvas, resetEInk, hasEInkHistory:() => false, isReady:() => ready && !failed };
+  return { canvas, render, getResultSource, resetEInk, hasEInkHistory:() => false, isReady:() => ready && !failed };
 })();
 
 // ════════════════════════════════════════════════════════════════════
@@ -7054,7 +7110,7 @@ function _getCaskiaCaptureSampleDims(options = {}) {
 }
 function _drawCaskiaCoreResult(sampleCanvas, targetCtx, outW, outH, sampleW, sampleH, isEInk) {
   targetCtx.imageSmoothingEnabled = false;
-  targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+  _drawCamSource(sampleCanvas, targetCtx, 0, 0, outW, outH);
   const overlay = isEInk
     ? _getCaskiaEInkOverlayCanvas(outW, outH)
     : _getCaskiaOverlayCanvas(outW, outH, sampleW, sampleH);
@@ -7079,7 +7135,7 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
     if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'caskia-std', {
       palette:CASKIA_LCD_COLS,
     })) {
-      _drawCaskiaCoreResult(_camPaletteWebGLEngine.getResultCanvas(), targetCtx, outW, outH, sampleW, sampleH, false);
+      _drawCaskiaCoreResult(_camPaletteWebGLEngine.getResultSource(), targetCtx, outW, outH, sampleW, sampleH, false);
       return;
     }
     const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
@@ -7409,25 +7465,10 @@ function _getVfdCaptureSampleDims(options = {}) {
 }
 function _drawVfdCoreResult(sampleCanvas, targetCtx, outW, outH, isThermal) {
   targetCtx.imageSmoothingEnabled = false;
-  targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
-  targetCtx.save();
-  targetCtx.globalCompositeOperation = 'screen';
-  if (isThermal) {
-    targetCtx.globalAlpha = 0.08;
-    targetCtx.filter = 'blur(1px)';
-    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
-  } else {
-    targetCtx.globalAlpha = 0.34;
-    targetCtx.filter = 'blur(4px)';
-    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
-    targetCtx.globalAlpha = 0.16;
-    targetCtx.filter = 'blur(1.6px)';
-    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
-  }
-  targetCtx.filter = 'none';
-  targetCtx.globalAlpha = 1;
-  targetCtx.globalCompositeOperation = 'source-over';
-  targetCtx.restore();
+  _drawCamSource(sampleCanvas, targetCtx, 0, 0, outW, outH);
+  _drawCamSampleGlow(sampleCanvas, targetCtx, outW, outH, isThermal
+    ? [{ alpha:0.08, blurPx:1 }]
+    : [{ alpha:0.34, blurPx:4 }, { alpha:0.16, blurPx:1.6 }]);
   targetCtx.drawImage(isThermal ? _getVfdThermalOverlayCanvas(outW, outH) : _getVfdOverlayCanvas(outW, outH), 0, 0, outW, outH);
 }
 function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
@@ -7487,7 +7528,7 @@ function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
   if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'vfd-std', {
     palette:cols,
   })) {
-    _drawVfdCoreResult(_camPaletteWebGLEngine.getResultCanvas(), targetCtx, outW, outH, false);
+    _drawVfdCoreResult(_camPaletteWebGLEngine.getResultSource(), targetCtx, outW, outH, false);
     return;
   }
   const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
@@ -7820,20 +7861,18 @@ function _renderAuto03Core(source, srcW, srcH, targetCtx, mirror, now = 0, optio
   targetCtx.imageSmoothingEnabled = true;
   targetCtx.imageSmoothingQuality = 'high';
   targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-  targetCtx.globalCompositeOperation = 'screen';
-  targetCtx.globalAlpha = 0.09 + cfg.bloom * 0.85;
-  targetCtx.filter = `blur(${camVariant === 'FLASH' ? 2.4 : camVariant === 'NIGHT' ? 2.8 : 1.6}px)`;
-  targetCtx.drawImage(bloomTarget.canvas, 0, 0, outW, outH);
-  if (camVariant !== 'DAY') {
-    targetCtx.globalAlpha = 0.04 + cfg.bloom * 0.35;
-    targetCtx.filter = `blur(${camVariant === 'FLASH' ? 4.2 : 4.8}px)`;
-    targetCtx.drawImage(bloomTarget.canvas, 0, 0, outW, outH);
-  }
-  targetCtx.filter = 'none';
-  targetCtx.globalAlpha = 1;
-  targetCtx.globalCompositeOperation = 'source-over';
-  targetCtx.imageSmoothingEnabled = false;
   targetCtx.restore();
+  const bloomPasses = [{
+    alpha:0.09 + cfg.bloom * 0.85,
+    blurPx:camVariant === 'FLASH' ? 2.4 : camVariant === 'NIGHT' ? 2.8 : 1.6,
+  }];
+  if (camVariant !== 'DAY') {
+    bloomPasses.push({
+      alpha:0.04 + cfg.bloom * 0.35,
+      blurPx:camVariant === 'FLASH' ? 4.2 : 4.8,
+    });
+  }
+  _drawCamSampleGlow(bloomTarget.canvas, targetCtx, outW, outH, bloomPasses);
   _drawAuto03Stamp(targetCtx, outW, outH);
 }
 function renderAuto03(source, srcW, srcH, targetCtx, mirror, now = 0) {
@@ -9323,7 +9362,15 @@ function _oscamDrawOverlayOnly(targetCtx) {
 const _oscamWebGLEngine = (() => {
   const PROC_W = 384;
   const PROC_H = 288;
+  const FINAL_W = 512;
+  const FINAL_H = 384;
   let canvas = document.createElement('canvas');
+  const inputCanvas = document.createElement('canvas');
+  inputCanvas.width = PROC_W;
+  inputCanvas.height = PROC_H;
+  const inputCtx = inputCanvas.getContext('2d', { alpha:false });
+  inputCtx.imageSmoothingEnabled = true;
+  inputCtx.imageSmoothingQuality = 'low';
   let gl = null;
   let ready = false;
   let failed = false;
@@ -9560,19 +9607,20 @@ const _oscamWebGLEngine = (() => {
   function uniformLocation(program, name) {
     return uniformLocations.get(program).get(name);
   }
-  function createTexture(w, h, source) {
+  function createTexture(w, h, source, filter = null) {
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    const textureFilter = filter || gl.LINEAR;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, textureFilter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, textureFilter);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     if (source) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     return tex;
   }
-  function createTarget(w, h) {
-    const tex = createTexture(w, h, null);
+  function createTarget(w, h, filter = null) {
+    const tex = createTexture(w, h, null, filter);
     const fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
@@ -9606,7 +9654,7 @@ const _oscamWebGLEngine = (() => {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
   function ensureTargets() {
-    const nextKey = `${OUT_W}x${OUT_H}:${PROC_W}x${PROC_H}`;
+    const nextKey = `${OUT_W}x${OUT_H}:${PROC_W}x${PROC_H}:${FINAL_W}x${FINAL_H}`;
     if (sizeKey === nextKey && lumaTarget && gradTarget && lineTarget && finalTargets[0] && finalTargets[1]) return;
     sizeKey = nextKey;
     canvas.width = OUT_W;
@@ -9619,7 +9667,10 @@ const _oscamWebGLEngine = (() => {
     lumaTarget = createTarget(PROC_W, PROC_H);
     gradTarget = createTarget(PROC_W, PROC_H);
     lineTarget = createTarget(PROC_W, PROC_H);
-    finalTargets = [createTarget(OUT_W, OUT_H), createTarget(OUT_W, OUT_H)];
+    finalTargets = [
+      createTarget(FINAL_W, FINAL_H, gl.NEAREST),
+      createTarget(FINAL_W, FINAL_H, gl.NEAREST),
+    ];
     finalIndex = 0;
     clearHistory();
   }
@@ -9682,20 +9733,24 @@ const _oscamWebGLEngine = (() => {
       if (gl.isContextLost()) throw new Error('WebGL context lost');
       ensureTargets();
       const [sx, sy, sw, sh] = cropCoords(srcW, srcH);
-      const uvScaleX = (mirror ? -sw : sw) / Math.max(1, srcW);
-      const uvOffsetX = (mirror ? sx + sw : sx) / Math.max(1, srcW);
-      const uvScaleY = sh / Math.max(1, srcH);
-      const uvOffsetY = 1 - (sy + sh) / Math.max(1, srcH);
+      inputCtx.save();
+      inputCtx.setTransform(1, 0, 0, 1, 0, 0);
+      if (mirror) {
+        inputCtx.translate(PROC_W, 0);
+        inputCtx.scale(-1, 1);
+      }
+      inputCtx.drawImage(source, sx, sy, sw, sh, 0, 0, PROC_W, PROC_H);
+      inputCtx.restore();
       gl.bindTexture(gl.TEXTURE_2D, sourceTex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, inputCanvas);
 
       const modeId = mode === 'STATIC' ? 2 : mode === 'WAVE' ? 1 : 0;
       runPass(preProgram, lumaTarget, program => {
         bindTexture(program, 'u_source', sourceTex, 0);
         gl.uniform2f(uniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
-        gl.uniform2f(uniformLocation(program, 'u_uvScale'), uvScaleX, uvScaleY);
-        gl.uniform2f(uniformLocation(program, 'u_uvOffset'), uvOffsetX, uvOffsetY);
+        gl.uniform2f(uniformLocation(program, 'u_uvScale'), 1, 1);
+        gl.uniform2f(uniformLocation(program, 'u_uvOffset'), 0, 0);
       });
       runPass(gradProgram, gradTarget, program => {
         bindTexture(program, 'u_luma', lumaTarget.tex, 0);
@@ -15366,6 +15421,13 @@ function _injectFlipSettingsStyles() {
     @media (min-width: 769px) and (min-height: 501px) {
       .flip-settings-panel { left: auto; right: 12px; width: 420px; border-radius: 18px 18px 0 0; }
       .flip-settings-trigger { right: calc(12px + env(safe-area-inset-right, 0px)); }
+    }
+    @media (max-width: 768px), (max-height: 500px) {
+      .flip-settings-trigger {
+        background: #1a1a1e;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
     }
   `;
   document.head.appendChild(style);

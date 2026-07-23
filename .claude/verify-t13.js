@@ -201,6 +201,12 @@ const PARITY_PHASE = String.raw`
     ctx.drawImage(canvas, 0, 0);
     return ctx.getImageData(0, 0, copy.width, copy.height).data.slice();
   };
+  const sourcePixels = source => {
+    const copy = document.createElement('canvas'); copy.width = source.sw; copy.height = source.sh;
+    const ctx = copy.getContext('2d', { willReadFrequently:true });
+    ctx.drawImage(source.canvas, source.sx, source.sy, source.sw, source.sh, 0, 0, source.sw, source.sh);
+    return ctx.getImageData(0, 0, copy.width, copy.height).data.slice();
+  };
   const diff = (a, b) => {
     let changedPixels = 0, totalDelta = 0, maxDelta = 0;
     for (let i = 0; i < a.length; i += 4) {
@@ -286,8 +292,8 @@ const PARITY_PHASE = String.raw`
     const cpuRaw = pixels(rawTarget(test.family, test.w, test.h));
     const gpu = makeOutput(test.outW, test.outH);
     callCore(test, source, gpu, false);
-    const gpuResult = _camPaletteWebGLEngine.getResultCanvas();
-    const gpuRaw = pixels(gpuResult);
+    const gpuResult = _camPaletteWebGLEngine.getResultSource();
+    const gpuRaw = sourcePixels(gpuResult);
     const dolphinPalette = test.family !== 'dolphin' ? null :
       test.variant === 'LGCY'
         ? (test.color === 'WARM' ? [[10,6,0],[60,28,4],[160,82,18],[220,175,100]] : [[0,6,18],[10,30,70],[60,110,180],[178,210,255]])
@@ -298,7 +304,7 @@ const PARITY_PHASE = String.raw`
       final:diff(pixels(cpu.canvas), pixels(gpu.canvas)),
       nonAdjacentPixels:dolphinPalette ? nonAdjacentBands(cpuRaw, gpuRaw, dolphinPalette) : 0,
       sample:[test.w, test.h],
-      engine:[gpuResult.width, gpuResult.height],
+      engine:[gpuResult.sw, gpuResult.sh],
     };
   }
 
@@ -467,7 +473,8 @@ async function main() {
   const staticChecks = {
     dedicatedEngine:sectionStart >= 0,
     nearestTextures:(section.match(/gl\.NEAREST/g) || []).length >= 2,
-    sampleSizedCanvas:/output\.width = w;\s*output\.height = h/.test(section),
+    sampleSizedCanvas:/canvas\.width < w \+ 2 \|\| canvas\.height < h \+ 2/.test(section) &&
+      /function getResultSource\(\)/.test(section) && !/outputCtx/.test(section),
     targetsBySize:/const renderTargetCache = new Map\(\)/.test(section) && /renderTargetCache\.get\(key\)/.test(section),
     contextLossGuard:/gl && gl\.isContextLost\(\)/.test(section),
     dsiBayerGpu:/dsi-bayer/.test(html) && /bayer8Threshold/.test(section),
