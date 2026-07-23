@@ -9241,6 +9241,7 @@ const _oscamWebGLEngine = (() => {
   const uniformLocations = new Map();
   const positionLocations = new Map();
   let warned = false;
+  let capabilityProbeResult = null;
 
   const vertSrc = `
     attribute vec2 a_position;
@@ -9525,6 +9526,17 @@ const _oscamWebGLEngine = (() => {
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
+  function disable(message, err) {
+    failed = true;
+    ready = false;
+    capabilityProbeResult = false;
+    if (!warned) {
+      if (err) console.warn(message, err);
+      else console.warn(message);
+      warned = true;
+    }
+    return false;
+  }
   function init() {
     if (ready) return true;
     if (failed) return false;
@@ -9552,13 +9564,7 @@ const _oscamWebGLEngine = (() => {
       ready = true;
       return true;
     } catch (err) {
-      if (!warned) {
-        console.warn('OSCAM WebGL init failed, using legacy fallback.', err);
-        warned = true;
-      }
-      failed = true;
-      ready = false;
-      return false;
+      return disable('OSCAM WebGL init failed, using legacy fallback.', err);
     }
   }
   function drawSource(source, srcW, srcH, mirror) {
@@ -9573,8 +9579,11 @@ const _oscamWebGLEngine = (() => {
     inputCtx.setTransform(1, 0, 0, 1, 0, 0);
   }
   function render(source, srcW, srcH, mirror, mode, cfg, palette) {
+    if (failed) return false;
+    if (gl && gl.isContextLost()) return disable('OSCAM WebGL context lost, using legacy fallback.');
     if (!init()) return false;
     try {
+      if (gl.isContextLost()) throw new Error('WebGL context lost');
       ensureTargets();
       drawSource(source, srcW, srcH, mirror);
       gl.bindTexture(gl.TEXTURE_2D, sourceTex);
@@ -9623,23 +9632,82 @@ const _oscamWebGLEngine = (() => {
       finalIndex = nextIndex;
       return true;
     } catch (err) {
-      if (!warned) {
-        console.warn('OSCAM WebGL runtime failed, using legacy fallback.', err);
-        warned = true;
+      return disable('OSCAM WebGL runtime failed, using legacy fallback.', err);
+    }
+  }
+  function probe() {
+    if (capabilityProbeResult !== null) return capabilityProbeResult && !failed;
+    if (failed || !init()) return false;
+    try {
+      if (gl.isContextLost()) return disable('OSCAM WebGL context lost, using legacy fallback.');
+      const probeSource = document.createElement('canvas');
+      probeSource.width = PROC_W;
+      probeSource.height = PROC_H;
+      const probeCtx = probeSource.getContext('2d');
+      probeCtx.fillStyle = '#000';
+      probeCtx.fillRect(0, 0, PROC_W, PROC_H);
+      probeCtx.fillStyle = '#fff';
+      const cell = 24;
+      for (let y = 0; y < PROC_H; y += cell) {
+        for (let x = 0; x < PROC_W; x += cell) {
+          if (((x / cell) + (y / cell)) % 2 === 0) probeCtx.fillRect(x, y, cell, cell);
+        }
       }
-      failed = true;
-      ready = false;
-      return false;
+      const rendered = render(probeSource, PROC_W, PROC_H, false, 'STD', {
+        sensitivityN:0.5,
+        lineWidthN:0.5,
+        lockN:0.5,
+        glowN:0.5,
+        scanN:0.5,
+      }, {
+        bg:[0, 0, 0],
+        floor:[0, 0, 0],
+        core:[0, 255, 0],
+        hot:[255, 255, 255],
+      });
+      if (!rendered) return false;
+      gl.finish();
+      if (gl.isContextLost()) return disable('OSCAM WebGL context lost, using legacy fallback.');
+      const sampleW = Math.min(64, canvas.width);
+      const sampleH = Math.min(64, canvas.height);
+      const sampleX = Math.max(0, Math.floor((canvas.width - sampleW) * 0.5));
+      const sampleY = Math.max(0, Math.floor((canvas.height - sampleH) * 0.5));
+      const pixels = new Uint8Array(sampleW * sampleH * 4);
+      gl.readPixels(sampleX, sampleY, sampleW, sampleH, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      const glError = gl.getError();
+      let litPixels = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i] || pixels[i + 1] || pixels[i + 2]) litPixels++;
+      }
+      if (glError !== gl.NO_ERROR || litPixels === 0) {
+        throw new Error(`probe frame invalid (gl=${glError}, lit=${litPixels})`);
+      }
+      capabilityProbeResult = true;
+      clearHistory();
+      finalIndex = 0;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      return true;
+    } catch (err) {
+      return disable('OSCAM WebGL capability probe failed, using legacy fallback.', err);
     }
   }
   function reset() {
-    if (!init()) return;
+    if (failed || (gl && gl.isContextLost()) || !init()) return;
     clearHistory();
   }
+  canvas.addEventListener('webglcontextlost', event => {
+    event.preventDefault();
+    disable('OSCAM WebGL context lost, using legacy fallback.');
+  });
   return {
     canvas,
     render,
     reset,
+    probe,
+    getCapabilityProbeResult:() => capabilityProbeResult,
     isReady:() => ready && !failed,
   };
 })();
@@ -9655,8 +9723,8 @@ function renderOscam(source, srcW, srcH, targetCtx, mirror) {
     _oscamPersistSignature = sigKey;
     _buildOscamOverlay();
   }
-  const forceLegacy = /Android/i.test(navigator.userAgent);
-  if (!forceLegacy && _oscamWebGLEngine.render(source, srcW, srcH, mirror, mode, cfg, palette)) {
+  const webglAllowed = !EARLY_IS_ANDROID || _oscamWebGLEngine.probe();
+  if (webglAllowed && _oscamWebGLEngine.render(source, srcW, srcH, mirror, mode, cfg, palette)) {
     targetCtx.drawImage(_oscamWebGLEngine.canvas, 0, 0, outW, outH);
     _oscamDrawOverlayOnly(targetCtx);
     return;
