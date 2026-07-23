@@ -375,7 +375,14 @@ const RUNTIME_PHASE = String.raw`
     ['(' + _asciiWorkerBody.toString() + ')()'],
     { type:'application/javascript' }
   ));
-  const runWorker = (useAtlas, measuredFrames, warmupFrames = 5, capturePixels = false, useGpuAtlas = true) =>
+  const runWorker = (
+    useAtlas,
+    measuredFrames,
+    warmupFrames = 5,
+    capturePixels = false,
+    useGpuAtlas = true,
+    settingsPatch = {}
+  ) =>
     new Promise((resolve, reject) => {
       const url = workerUrl();
       const worker = new Worker(url);
@@ -419,9 +426,10 @@ const RUNTIME_PHASE = String.raw`
           buf:buffer,
           sw:SW,
           sh:SH,
-          s:{ ...workerSettings, useAtlas, useGpuAtlas },
+          s:{ ...workerSettings, ...settingsPatch, useAtlas, useGpuAtlas },
           asciiSubMode:'classic',
           OUT_W:OW,
+          OUT_H:OH,
         }, [buffer]);
       };
       worker.postMessage({
@@ -429,15 +437,18 @@ const RUNTIME_PHASE = String.raw`
         buf:buffer,
         sw:SW,
         sh:SH,
-        s:{ ...workerSettings, useAtlas, useGpuAtlas },
+        s:{ ...workerSettings, ...settingsPatch, useAtlas, useGpuAtlas },
         asciiSubMode:'classic',
         OUT_W:OW,
+        OUT_H:OH,
       }, [buffer]);
     });
 
   const workerLegacyParity = await runWorker(false, 1, 0, true);
   const workerCanvasParity = await runWorker(true, 1, 0, true, false);
   const workerAtlasParity = await runWorker(true, 1, 0, true, true);
+  const pyCharsLegacy = await runWorker(false, 1, 0, true, false, { pyMode:'chars', chaos:0 });
+  const pyCharsAtlas = await runWorker(true, 1, 0, true, true, { pyMode:'chars', chaos:0 });
   const workerParity = {
     canvas:diff(workerLegacyParity.pixels, workerCanvasParity.pixels),
     gpu:diff(workerLegacyParity.pixels, workerAtlasParity.pixels),
@@ -445,6 +456,7 @@ const RUNTIME_PHASE = String.raw`
     textEqual:
       workerLegacyParity.text === workerCanvasParity.text &&
       workerLegacyParity.text === workerAtlasParity.text,
+    pyChars:diff(pyCharsLegacy.pixels, pyCharsAtlas.pixels),
   };
   const workerLegacyBench = await runWorker(false, 300, 8, false);
   const workerAtlasBench = await runWorker(true, 300, 8, false);
@@ -466,6 +478,108 @@ const RUNTIME_PHASE = String.raw`
   };
   workerPerformance.reductionPct =
     (1 - workerPerformance.atlas.avgMs / workerPerformance.legacy.avgMs) * 100;
+
+  const workerResilience = await new Promise((resolve, reject) => {
+    let body = _asciiWorkerBody.toString();
+    const hookAt = "self.onmessage = function(e) {";
+    assertLocal(body.includes(hookAt), 'hook worker no encontrado');
+    body = body
+      .replace(
+        "if (cached) {",
+        "if (cached) { self.__atlasCacheHits=(self.__atlasCacheHits||0)+1;"
+      )
+      .replace(
+        "console.warn(message, error || '');",
+        "self.__glyphWarns=(self.__glyphWarns||0)+1;console.warn(message, error || '');"
+      );
+    const probeCode = [
+      "if (e.data.type === 'probe') {",
+      "  self.postMessage({ type:'probeResult',",
+      "    cacheSize:_atlasCache.size, cacheBytes:_atlasCacheBytes, cacheBudget:ATLAS_CACHE_BUDGET,",
+      "    sheetBytes:[..._atlasCache.values()].reduce((n,a)=>n+a.canvas.width*a.canvas.height*4,0),",
+      "    cacheHits:self.__atlasCacheHits||0, glyphWarns:self.__glyphWarns||0,",
+      "    glDisabled:_glyphGLDisabled, glActive:!!_glyphGL,",
+      "  });",
+      "  return;",
+      "}",
+      "if (e.data.type === 'loseGL') {",
+      "  let lost=false;",
+      "  if (_glyphGL) {",
+      "    const ext=_glyphGL.gl.getExtension('WEBGL_lose_context');",
+      "    if (ext) { ext.loseContext(); lost=true; }",
+      "  }",
+      "  self.postMessage({ type:'lostResult', lost });",
+      "  return;",
+      "}",
+    ].join('\n');
+    body = body.replace(hookAt, hookAt + probeCode);
+    const url = URL.createObjectURL(new Blob(['(' + body + ')()'], { type:'application/javascript' }));
+    const worker = new Worker(url);
+    URL.revokeObjectURL(url);
+    const pending = [];
+    worker.onmessage = event => pending.shift()?.resolve(event.data);
+    worker.onerror = event => {
+      pending.shift()?.reject(new Error(event.message || 'worker resiliencia fallo'));
+    };
+    const roundtrip = message => new Promise((resolveMessage, rejectMessage) => {
+      pending.push({ resolve:resolveMessage, reject:rejectMessage });
+      worker.postMessage(message, message.buf ? [message.buf] : []);
+    });
+    const render = async settings => {
+      const data = await roundtrip({
+        type:'render',
+        buf:seed.slice().buffer,
+        sw:SW,
+        sh:SH,
+        s:{ ...workerSettings, ...settings, useAtlas:true, useGpuAtlas:true },
+        asciiSubMode:'classic',
+        OUT_W:OW,
+        OUT_H:OH,
+      });
+      const canvas = new OffscreenCanvas(OW, OH);
+      const ctx = canvas.getContext('2d', { willReadFrequently:true });
+      ctx.drawImage(data.bitmap, 0, 0);
+      data.bitmap.close();
+      return ctx.getImageData(0, 0, OW, OH).data;
+    };
+    (async () => {
+      for (let i = 0; i < 20; i++) {
+        await render({
+          palInk:[i * 12 % 255, (40 + i * 9) % 255, (200 - i * 7 + 255) % 255],
+        });
+      }
+      const cacheAfterChurn = await roundtrip({ type:'probe' });
+      const hitsBefore = cacheAfterChurn.cacheHits;
+      await render({ palInk:[228,211,67] });
+      const cacheAfterHit = await roundtrip({ type:'probe' });
+      const reference = await render({ palInk:[255,255,255], palPaper:[8,8,8] });
+      const lost = await roundtrip({ type:'loseGL' });
+      const afterLoss = await render({ palInk:[255,255,255], palPaper:[8,8,8] });
+      await render({ palInk:[255,255,255], palPaper:[8,8,8] });
+      const afterLossProbe = await roundtrip({ type:'probe' });
+      worker.terminate();
+      resolve({
+        cache:{
+          size:cacheAfterChurn.cacheSize,
+          bytes:cacheAfterChurn.cacheBytes,
+          sheetBytes:cacheAfterChurn.sheetBytes,
+          budget:cacheAfterChurn.cacheBudget,
+          hitDelta:cacheAfterHit.cacheHits - hitsBefore,
+          sizeAfterHit:cacheAfterHit.cacheSize,
+        },
+        contextLoss:{
+          lost:lost.lost,
+          parity:diff(reference, afterLoss),
+          warnings:afterLossProbe.glyphWarns,
+          glDisabled:afterLossProbe.glDisabled,
+          workerResponded:true,
+        },
+      });
+    })().catch(error => {
+      worker.terminate();
+      reject(error);
+    });
+  });
 
   const slhtCanvasLegacy = document.createElement('canvas');
   slhtCanvasLegacy.width = OW;
@@ -535,6 +649,24 @@ const RUNTIME_PHASE = String.raw`
   };
   slhtPerformance.reductionPct =
     (1 - slhtPerformance.atlas.avgMs / slhtPerformance.legacy.avgMs) * 100;
+  const clearSlhtAtlases = () => {
+    for (const atlas of _slhtGlyphAtlases.values()) atlas.canvas.close?.();
+    _slhtGlyphAtlases.clear();
+  };
+  const slhtBuildMsBySize = {};
+  for (let size = 5; size <= 18; size++) {
+    clearSlhtAtlases();
+    slhtAtlasCtx.font = size + 'px monospace';
+    slhtAtlasCtx.fillStyle = '#000000';
+    const started = performance.now();
+    _slhtGetGlyphAtlas(slhtAtlasCtx, size);
+    slhtBuildMsBySize[size] = performance.now() - started;
+  }
+  const slhtBuild = {
+    bySize:slhtBuildMsBySize,
+    maxMs:Math.max(...Object.values(slhtBuildMsBySize)),
+  };
+  clearSlhtAtlases();
 
   const syncPixels = seed.slice();
   pySubMode = 'off';
@@ -573,8 +705,11 @@ const RUNTIME_PHASE = String.raw`
   const raceBefore = { ..._asciiWorkerStats };
   const nativeDrawImage = ctxAscii.drawImage;
   let wrongSubmodePaints = 0;
+  let expectedPaintHeight = 0;
+  let staleHeightPaints = 0;
   ctxAscii.drawImage = function(...args) {
     if (asciiSubMode !== 'classic') wrongSubmodePaints++;
+    if (expectedPaintHeight && OUT_H !== expectedPaintHeight) staleHeightPaints++;
     return nativeDrawImage.apply(this, args);
   };
   const savedCols = asciiCols;
@@ -594,6 +729,20 @@ const RUNTIME_PHASE = String.raw`
   OUT_W = savedOutW + 4;
   await waitWorkerIdle();
   OUT_W = savedOutW;
+  const heightDiscardedBefore = _asciiWorkerStats.discardedFrames;
+  const savedAspectW = camAspW;
+  const savedAspectH = camAspH;
+  for (let i = 0; i < 10; i++) {
+    applyCamAspect(4, 3);
+    expectedPaintHeight = OUT_H;
+    const heightImage = _captureAsciiWorkerImageData(SW, SH);
+    assertLocal(!!heightImage, 'sin buffer para resize real en iteracion ' + i);
+    _dispatchAsciiWorker(heightImage, SW, SH, false);
+    applyCamAspect(16, 9);
+    await waitWorkerIdle();
+    expectedPaintHeight = 0;
+  }
+  applyCamAspect(savedAspectW, savedAspectH);
   ctxAscii.drawImage = nativeDrawImage;
   asciiCols = savedCols;
   const raceAfter = { ..._asciiWorkerStats };
@@ -604,7 +753,13 @@ const RUNTIME_PHASE = String.raw`
     discardedDelta:raceAfter.discardedFrames - raceBefore.discardedFrames,
     returnedDelta:raceAfter.returnedBuffers - raceBefore.returnedBuffers,
     widthGuardDiscarded:
-      raceAfter.discardedFrames - raceBefore.discardedFrames === 21,
+      heightDiscardedBefore - raceBefore.discardedFrames === 21,
+    heightGuard:{
+      iterations:10,
+      discarded:raceAfter.discardedFrames - heightDiscardedBefore,
+      stalePaints:staleHeightPaints,
+      outWConstant:savedOutW === OUT_W,
+    },
     poolCreatedDelta:raceAfter.poolCreated - raceBefore.poolCreated,
     poolMissesDelta:raceAfter.poolMisses - raceBefore.poolMisses,
     gpuReadbackDelta:raceAfter.gpuReadbacks - raceBefore.gpuReadbacks,
@@ -616,8 +771,8 @@ const RUNTIME_PHASE = String.raw`
   };
 
   return {
-    worker:{ parity:workerParity, performance:workerPerformance },
-    slht:{ parity:slhtParity, performance:slhtPerformance, activeGlyphs:_slhtActiveP },
+    worker:{ parity:workerParity, performance:workerPerformance, resilience:workerResilience },
+    slht:{ parity:slhtParity, performance:slhtPerformance, build:slhtBuild, activeGlyphs:_slhtActiveP },
     syncPool,
     race,
     runtime:{ raf:__t15.raf, warnings:__t15.warnings, errors:__t15.errors },
@@ -651,7 +806,10 @@ async function main() {
     missingStaticRefs,
     workerAtlas:/function getGlyphAtlas\(/.test(html) && /drawAtlasGlyph\(/.test(html),
     workerReturnsBuffer:/\[bitmap,buf\]/.test(html),
-    workerRaceGuard:/e\.data\.asciiSubMode === asciiSubMode && e\.data\.OUT_W === OUT_W/.test(html),
+    workerRaceGuard:/e\.data\.OUT_W === OUT_W && e\.data\.OUT_H === OUT_H/.test(html),
+    workerPendingHeightGuard:/p\.OUT_H === OUT_H/.test(html),
+    workerPyGate:/const useAtlas=s\.useAtlas!==false&&s\.pyMode==='off'/.test(html),
+    workerByteBudget:/const ATLAS_CACHE_BUDGET = 32 \* 1024 \* 1024/.test(html),
     workerAtlasBatch:/function renderGlyphBatch\(/.test(html) && /gl\.drawArrays\(gl\.TRIANGLES/.test(html),
     directReadback:/const _asciiReadbackEngine/.test(html) && /gl\.readPixels\(0, 0, width, height/.test(html),
     syncPools:/function _ensureAsciiFloatPools\(length\)/.test(html),
@@ -662,6 +820,9 @@ async function main() {
   assert(staticChecks.workerAtlas, 'atlas worker ausente');
   assert(staticChecks.workerReturnsBuffer, 'worker no devuelve buffer');
   assert(staticChecks.workerRaceGuard, 'guard de carrera ausente');
+  assert(staticChecks.workerPendingHeightGuard, 'guard OUT_H del pendiente ausente');
+  assert(staticChecks.workerPyGate, 'atlas no esta limitado a pyMode off');
+  assert(staticChecks.workerByteBudget, 'presupuesto por bytes del atlas ausente');
   assert(staticChecks.workerAtlasBatch, 'batch WebGL del atlas ausente');
   assert(staticChecks.directReadback, 'readback directo al pool ausente');
   assert(staticChecks.syncPools, 'pools sync ausentes');
@@ -738,11 +899,36 @@ async function main() {
       result.worker.parity.gpuVsCanvas.changedPixels === 0,
       `batch GPU difiere del atlas drawImage en ${result.worker.parity.gpuVsCanvas.changedPixels} px`
     );
+    assert(
+      result.worker.parity.pyChars.changedPixels === 0,
+      `pyMode chars difiere en ${result.worker.parity.pyChars.changedPixels} px`
+    );
     assert(result.worker.performance.legacy.frames === 300, 'worker legacy no midio 300 frames');
     assert(result.worker.performance.atlas.frames === 300, 'worker atlas no midio 300 frames');
     assert(
       result.worker.performance.reductionPct >= 50,
       `worker atlas reduccion ${result.worker.performance.reductionPct.toFixed(2)}% < 50%`
+    );
+    assert(
+      result.worker.resilience.cache.bytes <= result.worker.resilience.cache.budget &&
+        result.worker.resilience.cache.sheetBytes <= result.worker.resilience.cache.budget,
+      `cache atlas=${result.worker.resilience.cache.bytes}B excede ${result.worker.resilience.cache.budget}B`
+    );
+    assert(
+      result.worker.resilience.cache.hitDelta >= 1 &&
+        result.worker.resilience.cache.sizeAfterHit === result.worker.resilience.cache.size,
+      'cache atlas perdio el hit LRU normal'
+    );
+    assert(result.worker.resilience.contextLoss.lost, 'WEBGL_lose_context no disponible');
+    assert(
+      result.worker.resilience.contextLoss.workerResponded &&
+        result.worker.resilience.contextLoss.parity.changedPixels === 0,
+      `fallback 2D tras context-loss difiere en ${result.worker.resilience.contextLoss.parity.changedPixels} px`
+    );
+    assert(
+      result.worker.resilience.contextLoss.warnings === 1 &&
+        result.worker.resilience.contextLoss.glDisabled,
+      `context-loss warnings=${result.worker.resilience.contextLoss.warnings}, disabled=${result.worker.resilience.contextLoss.glDisabled}`
     );
     assert(result.slht.performance.legacy.frames === 300, 'SLHT legacy no midio 300 frames');
     assert(result.slht.performance.atlas.frames === 300, 'SLHT atlas no midio 300 frames');
@@ -754,16 +940,26 @@ async function main() {
       result.slht.performance.reductionPct >= 30,
       `SLHT atlas reduccion ${result.slht.performance.reductionPct.toFixed(2)}% < 30%`
     );
+    assert(
+      result.slht.build.maxMs < 50,
+      `SLHT atlas build max ${result.slht.build.maxMs.toFixed(2)}ms >= 50ms`
+    );
     assert(result.syncPool.allocsAfterFirst - result.syncPool.allocsBefore <= 2, 'sync asigno mas de dos pools');
     assert(result.syncPool.allocsAfterThree === result.syncPool.allocsAfterFirst, 'sync reasigno pools');
     assert(result.syncPool.grayReused && result.syncPool.tmpReused, 'sync no reutilizo arrays');
     assert(result.syncPool.pixelHashesEqual, 'sync cambio pixeles entre frames identicos');
     assert(result.race.wrongSubmodePaints === 0, `race pinto ${result.race.wrongSubmodePaints} frames incorrectos`);
     assert(result.race.acceptedDelta === 0, `race acepto ${result.race.acceptedDelta} frames`);
-    assert(result.race.discardedDelta === 21, `race descarto ${result.race.discardedDelta}/21`);
-    assert(result.race.returnedDelta === 21, `worker devolvio ${result.race.returnedDelta}/21 buffers`);
+    assert(result.race.discardedDelta === 31, `race descarto ${result.race.discardedDelta}/31`);
+    assert(result.race.returnedDelta === 31, `worker devolvio ${result.race.returnedDelta}/31 buffers`);
+    assert(
+      result.race.heightGuard.discarded === 10 &&
+        result.race.heightGuard.stalePaints === 0 &&
+        result.race.heightGuard.outWConstant,
+      `resize OUT_H descarto=${result.race.heightGuard.discarded}/10, paints=${result.race.heightGuard.stalePaints}`
+    );
     assert(result.race.poolMissesDelta === 0, `ping-pong tuvo ${result.race.poolMissesDelta} misses`);
-    assert(result.race.gpuReadbackDelta === 21, `readback GPU=${result.race.gpuReadbackDelta}/21`);
+    assert(result.race.gpuReadbackDelta === 31, `readback GPU=${result.race.gpuReadbackDelta}/31`);
     assert(result.race.fallbackReadbackDelta === 0, `readback 2D fallback=${result.race.fallbackReadbackDelta}`);
     assert(
       result.race.readbackParity.changedPixels === 0,

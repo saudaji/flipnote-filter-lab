@@ -9833,104 +9833,95 @@ function _slhtGetGlyphAtlas(ctx, glyphSz) {
 
   const glyphs = [...new Set(SLHT_GLYPHS)];
   const angleSteps = SLHT_ATLAS_ANGLES;
-  const tile = Math.max(20, Math.ceil(glyphSz * 4));
   const spriteCount = glyphs.length * angleSteps;
   const columns = 24;
+  const tile = Math.max(20, Math.ceil(glyphSz * 4));
+  const rows = Math.ceil(spriteCount / columns);
   const canvas = typeof OffscreenCanvas !== 'undefined'
-    ? new OffscreenCanvas(tile * columns, tile * Math.ceil(spriteCount / columns))
+    ? new OffscreenCanvas(tile * columns, tile * rows)
     : document.createElement('canvas');
   canvas.width = tile * columns;
-  canvas.height = tile * Math.ceil(spriteCount / columns);
+  canvas.height = tile * rows;
   const atlasCtx = canvas.getContext('2d');
   atlasCtx.font = font;
   atlasCtx.textAlign = 'center';
   atlasCtx.textBaseline = 'middle';
   atlasCtx.fillStyle = color;
-  const entries = new Map();
   const sourceX = new Uint16Array(spriteCount);
   const sourceY = new Uint16Array(spriteCount);
+  const spriteW = new Uint8Array(spriteCount);
+  const spriteH = new Uint8Array(spriteCount);
+  const spriteDX = new Int8Array(spriteCount);
+  const spriteDY = new Int8Array(spriteCount);
   for (let glyphIndex = 0; glyphIndex < glyphs.length; glyphIndex++) {
-    const sprites = [];
     for (let angleIndex = 0; angleIndex < angleSteps; angleIndex++) {
       const index = glyphIndex * angleSteps + angleIndex;
       const sx = (index % columns) * tile;
       const sy = Math.floor(index / columns) * tile;
-      sourceX[index] = sx;
-      sourceY[index] = sy;
       atlasCtx.save();
       atlasCtx.translate(sx + tile * 0.5, sy + tile * 0.5);
       atlasCtx.rotate(angleIndex / angleSteps * Math.PI * 2);
       atlasCtx.fillText(glyphs[glyphIndex], 0, 0);
       atlasCtx.restore();
-      const pixels = atlasCtx.getImageData(sx, sy, tile, tile).data;
-      let minX = tile, minY = tile, maxX = -1, maxY = -1;
-      for (let y = 0; y < tile; y++) {
-        for (let x = 0; x < tile; x++) {
-          if (pixels[(y * tile + x) * 4 + 3] === 0) continue;
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-        }
-      }
-      const spriteW = Math.max(1, maxX - minX + 1);
-      const spriteH = Math.max(1, maxY - minY + 1);
-      const sprite = typeof OffscreenCanvas !== 'undefined'
-        ? new OffscreenCanvas(spriteW, spriteH)
-        : document.createElement('canvas');
-      sprite.width = spriteW;
-      sprite.height = spriteH;
-      if (maxX >= minX && maxY >= minY) {
-        sprite.getContext('2d').drawImage(
-          canvas,
-          sx + minX, sy + minY, spriteW, spriteH,
-          0, 0, spriteW, spriteH
-        );
-      }
-      sprites.push({
-        canvas:sprite.transferToImageBitmap ? sprite.transferToImageBitmap() : sprite,
-        dx:minX - tile * 0.5,
-        dy:minY - tile * 0.5,
-      });
     }
-    entries.set(glyphs[glyphIndex], sprites);
   }
-  const sprites = glyphs.flatMap(glyph => entries.get(glyph));
-  const cellW = Math.max(...sprites.map(sprite => sprite.canvas.width));
-  const cellH = Math.max(...sprites.map(sprite => sprite.canvas.height));
+  // One read of the completed sheet preserves the original alpha-tight source
+  // rectangles without 900 getImageData calls or 900 temporary bitmaps.
+  const pixels = atlasCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+  for (let index = 0; index < spriteCount; index++) {
+    const sx = (index % columns) * tile;
+    const sy = Math.floor(index / columns) * tile;
+    let minX = tile, minY = tile, maxX = -1, maxY = -1;
+    for (let y = 0; y < tile; y++) {
+      const rowOffset = ((sy + y) * canvas.width + sx) * 4;
+      for (let x = 0; x < tile; x++) {
+        if (pixels[rowOffset + x * 4 + 3] === 0) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < minX || maxY < minY) minX = minY = maxX = maxY = 0;
+    sourceX[index] = sx + minX;
+    sourceY[index] = sy + minY;
+    spriteW[index] = maxX - minX + 1;
+    spriteH[index] = maxY - minY + 1;
+    spriteDX[index] = minX - tile * 0.5;
+    spriteDY[index] = minY - tile * 0.5;
+  }
+  const cellW = Math.max(...spriteW);
+  const cellH = Math.max(...spriteH);
   const packedColumns = 64;
+  const packedRows = Math.ceil(spriteCount / packedColumns);
   const packedCanvas = typeof OffscreenCanvas !== 'undefined'
-    ? new OffscreenCanvas(cellW * packedColumns, cellH * Math.ceil(sprites.length / packedColumns))
+    ? new OffscreenCanvas(cellW * packedColumns, cellH * packedRows)
     : document.createElement('canvas');
   packedCanvas.width = cellW * packedColumns;
-  packedCanvas.height = cellH * Math.ceil(sprites.length / packedColumns);
+  packedCanvas.height = cellH * packedRows;
   const packedCtx = packedCanvas.getContext('2d');
-  const packedX = new Uint16Array(sprites.length);
-  const packedY = new Uint16Array(sprites.length);
-  const packedW = new Uint8Array(sprites.length);
-  const packedH = new Uint8Array(sprites.length);
-  const packedDX = new Int8Array(sprites.length);
-  const packedDY = new Int8Array(sprites.length);
-  for (let i = 0; i < sprites.length; i++) {
-    const sprite = sprites[i];
-    packedX[i] = (i % packedColumns) * cellW;
-    packedY[i] = Math.floor(i / packedColumns) * cellH;
-    packedW[i] = sprite.canvas.width;
-    packedH[i] = sprite.canvas.height;
-    packedDX[i] = sprite.dx;
-    packedDY[i] = sprite.dy;
-    packedCtx.drawImage(sprite.canvas, packedX[i], packedY[i]);
-    sprite.canvas.close?.();
+  for (let index = 0; index < spriteCount; index++) {
+    const packedX = (index % packedColumns) * cellW;
+    const packedY = Math.floor(index / packedColumns) * cellH;
+    packedCtx.drawImage(
+      canvas,
+      sourceX[index], sourceY[index], spriteW[index], spriteH[index],
+      packedX, packedY, spriteW[index], spriteH[index]
+    );
+    sourceX[index] = packedX;
+    sourceY[index] = packedY;
   }
-  const sheet = packedCanvas.transferToImageBitmap ? packedCanvas.transferToImageBitmap() : packedCanvas;
+  const sheet = packedCanvas.transferToImageBitmap
+    ? packedCanvas.transferToImageBitmap()
+    : packedCanvas;
   const atlas = {
     canvas:sheet,
-    sourceX:packedX,
-    sourceY:packedY,
-    spriteW:packedW,
-    spriteH:packedH,
-    spriteDX:packedDX,
-    spriteDY:packedDY,
+    sourceX,
+    sourceY,
+    spriteW,
+    spriteH,
+    spriteDX,
+    spriteDY,
     tile,
     angleSteps,
   };
@@ -12233,9 +12224,33 @@ function _asciiWorkerBody() {
   let _grayPool = new Float32Array(0);
   let _tmpPool = new Float32Array(0);
   const _atlasCache = new Map();
+  const ATLAS_CACHE_BUDGET = 32 * 1024 * 1024;
+  let _atlasCacheBytes = 0;
   let _gridLayoutCache = null;
   let _glyphGL = null;
+  let _glyphGLDisabled = false;
+  let _glyphGLWarned = false;
   let _glyphGLVertices = new Float32Array(0);
+
+  function warnGlyphGL(message, error) {
+    _glyphGLDisabled = true;
+    _glyphGL = null;
+    if (!_glyphGLWarned) {
+      console.warn(message, error || '');
+      _glyphGLWarned = true;
+    }
+  }
+
+  function evictGlyphAtlas(key, atlas) {
+    if (_glyphGL && atlas?.canvas) {
+      const texture = _glyphGL.textures.get(atlas.canvas);
+      if (texture && !_glyphGL.gl.isContextLost()) _glyphGL.gl.deleteTexture(texture);
+      _glyphGL.textures.delete(atlas.canvas);
+    }
+    atlas?.canvas?.close?.();
+    _atlasCache.delete(key);
+    _atlasCacheBytes = Math.max(0, _atlasCacheBytes - (atlas?.bytes || 0));
+  }
 
   function ensureFloatPools(length) {
     if (_grayPool.length !== length) {
@@ -12309,20 +12324,29 @@ function _asciiWorkerBody() {
       phaseSteps,
       phaseArea:phaseSteps * phaseSteps,
       columns,
+      bytes:canvas.width * canvas.height * 4,
     };
-    _atlasCache.set(key, atlas);
-    if (_atlasCache.size > 8) {
-      const oldestKey = _atlasCache.keys().next().value;
-      const oldest = _atlasCache.get(oldestKey);
-      if (_glyphGL && oldest?.canvas) {
-        const texture = _glyphGL.textures.get(oldest.canvas);
-        if (texture) _glyphGL.gl.deleteTexture(texture);
-        _glyphGL.textures.delete(oldest.canvas);
+    if (atlas.bytes <= ATLAS_CACHE_BUDGET) {
+      while (_atlasCache.size && _atlasCacheBytes + atlas.bytes > ATLAS_CACHE_BUDGET) {
+        const oldestKey = _atlasCache.keys().next().value;
+        evictGlyphAtlas(oldestKey, _atlasCache.get(oldestKey));
       }
-      oldest?.canvas?.close?.();
-      _atlasCache.delete(oldestKey);
+      _atlasCache.set(key, atlas);
+      _atlasCacheBytes += atlas.bytes;
+    } else {
+      atlas.transient = true;
     }
     return atlas;
+  }
+
+  function releaseTransientGlyphAtlas(atlas) {
+    if (!atlas?.transient) return;
+    if (_glyphGL) {
+      const texture = _glyphGL.textures.get(atlas.canvas);
+      if (texture && !_glyphGL.gl.isContextLost()) _glyphGL.gl.deleteTexture(texture);
+      _glyphGL.textures.delete(atlas.canvas);
+    }
+    atlas.canvas.close?.();
   }
 
   function drawAtlasGlyph(ctx, atlas, glyph, x, y) {
@@ -12388,6 +12412,11 @@ function _asciiWorkerBody() {
   }
 
   function ensureGlyphGL(outW, outH) {
+    if (_glyphGLDisabled) return null;
+    if (_glyphGL?.gl?.isContextLost()) {
+      warnGlyphGL('ASCII atlas WebGL context lost, using 2D fallback.');
+      return null;
+    }
     if (!_glyphGL) {
       const canvas = new OffscreenCanvas(outW, outH);
       const gl = canvas.getContext('webgl', {
@@ -12444,8 +12473,8 @@ function _asciiWorkerBody() {
           maxTextureSize:gl.getParameter(gl.MAX_TEXTURE_SIZE),
           textures:new WeakMap(),
         };
-      } catch (_) {
-        _glyphGL = null;
+      } catch (error) {
+        warnGlyphGL('ASCII atlas WebGL init failed, using 2D fallback.', error);
         return null;
       }
     }
@@ -12476,6 +12505,7 @@ function _asciiWorkerBody() {
 
   function renderGlyphBatch(state, atlas, floatCount, paper, outW, outH) {
     const gl = state.gl;
+    if (gl.isContextLost()) throw new Error('WebGL context lost');
     let texture = state.textures.get(atlas.canvas);
     if (!texture) {
       texture = gl.createTexture();
@@ -12507,6 +12537,36 @@ function _asciiWorkerBody() {
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.drawArrays(gl.TRIANGLES, 0, floatCount / 4);
     return state.canvas.transferToImageBitmap();
+  }
+
+  function renderGlyphBatch2D(ctx, atlas, vertices, floatCount) {
+    for (let offset = 0; offset < floatCount; offset += 24) {
+      const x0 = vertices[offset];
+      const y0 = vertices[offset + 1];
+      const u0 = vertices[offset + 2];
+      const v0 = vertices[offset + 3];
+      ctx.drawImage(
+        atlas.canvas,
+        Math.round(u0 * atlas.canvas.width),
+        Math.round(v0 * atlas.canvas.height),
+        atlas.tileW,
+        atlas.tileH,
+        x0,
+        y0,
+        atlas.tileW,
+        atlas.tileH
+      );
+    }
+  }
+
+  function finishGlyphFrame(state, ctx, atlas, vertices, floatCount, paper, outW, outH) {
+    try {
+      return renderGlyphBatch(state, atlas, floatCount, paper, outW, outH);
+    } catch (error) {
+      renderGlyphBatch2D(ctx, atlas, vertices, floatCount);
+      warnGlyphGL('ASCII atlas WebGL runtime failed, using 2D fallback.', error);
+      return _osc.transferToImageBitmap();
+    }
   }
 
   function pixLum(r, g, b, s) {
@@ -12562,15 +12622,9 @@ function _asciiWorkerBody() {
     const fontSize=Math.max(4,Math.floor(cH*0.92));
     const font=`bold ${fontSize}px ${s.font||'monospace'}`;
     ctx.font=font; ctx.textBaseline='top';
-    const useAtlas=s.useAtlas!==false;
+    const useAtlas=s.useAtlas!==false&&s.pyMode==='off';
     const normalColor=`rgb(${s.palInk})`;
-    const normalAtlas=useAtlas&&s.pyMode==='off'?getGlyphAtlas(ctx,font,normalColor,grad):null;
-    const charAtlases=useAtlas&&s.pyMode==='chars'
-      ? PYPAL[s.pyPal].chars.map(col=>getGlyphAtlas(ctx,font,`rgb(${col[0]},${col[1]},${col[2]})`,grad,false))
-      : null;
-    const codeAtlases=useAtlas&&s.pyMode==='code'
-      ? PYPAL[s.pyPal].code.map((col,role)=>getGlyphAtlas(ctx,font,`rgb(${col[0]},${col[1]},${col[2]})`,PYBANK[role],false))
-      : null;
+    const normalAtlas=useAtlas?getGlyphAtlas(ctx,font,normalColor,grad):null;
     const layout=normalAtlas
       ? getGridLayout(sw,sh,cols,rows,sCW,sCH,cW,cH,s.frame,normalAtlas.phaseSteps)
       : null;
@@ -12609,20 +12663,14 @@ function _asciiWorkerBody() {
             const role=Math.min(5,Math.floor(roleRaw*6));
             const col=PYPAL[s.pyPal].code[role];
             const token=PYBANK[role][(Math.random()*PYBANK[role].length)|0];
-            if (codeAtlases) drawAtlasGlyph(ctx,codeAtlases[role],token,s.frame+c*cW,s.frame+r*cH);
-            else {
-              ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
-              ctx.fillText(token,s.frame+c*cW,s.frame+r*cH);
-            }
+            ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
+            ctx.fillText(token,s.frame+c*cW,s.frame+r*cH);
           } else if (s.pyMode==='chars') {
             const pyCols=PYPAL[s.pyPal].chars;
             const colIdx=Math.min(pyCols.length-1,Math.floor((lumN*(1-chaosN)+Math.random()*chaosN)*pyCols.length));
             const col=pyCols[colIdx];
-            if (charAtlases) drawAtlasGlyph(ctx,charAtlases[colIdx],ch,s.frame+c*cW,s.frame+r*cH);
-            else {
-              ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
-              ctx.fillText(ch,s.frame+c*cW,s.frame+r*cH);
-            }
+            ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
+            ctx.fillText(ch,s.frame+c*cW,s.frame+r*cH);
           } else {
             if (normalAtlas) {
               const glyphIndex=normalAtlas.entries.get(ch);
@@ -12662,8 +12710,9 @@ function _asciiWorkerBody() {
       ? s.palPaper
       : String(s.palPaper).split(',').map(Number);
     const bitmap=glyphGLState
-      ? renderGlyphBatch(glyphGLState,normalAtlas,glyphVertexOffset,paperRGB,s.outW,s.outH)
+      ? finishGlyphFrame(glyphGLState,ctx,normalAtlas,glyphVertices,glyphVertexOffset,paperRGB,s.outW,s.outH)
       : _osc.transferToImageBitmap();
+    releaseTransientGlyphAtlas(normalAtlas);
     const renderMs=performance.now()-renderStart;
     self.postMessage({
       type:'frame',
@@ -12674,6 +12723,7 @@ function _asciiWorkerBody() {
       sh,
       asciiSubMode:e.data.asciiSubMode,
       OUT_W:e.data.OUT_W,
+      OUT_H:e.data.OUT_H,
       renderMs,
       prepMs:gridStart-renderStart,
       gridMs:gridEnd-gridStart,
@@ -12873,7 +12923,8 @@ function _initAsciiWorker() {
           _asciiWorkerStats.returnedBuffers++;
         } catch (_) {}
       }
-      const frameMatches = e.data.asciiSubMode === asciiSubMode && e.data.OUT_W === OUT_W;
+      const frameMatches = e.data.asciiSubMode === asciiSubMode &&
+        e.data.OUT_W === OUT_W && e.data.OUT_H === OUT_H;
       if (frameMatches) {
         ctxAscii.drawImage(e.data.bitmap, 0, 0);
         if (typeof e.data.text === 'string') lastAsciiText = e.data.text;
@@ -12886,7 +12937,8 @@ function _initAsciiWorker() {
       _asciiWorkerBusy = false;
       if (_asciiWorkerPend) {
         const p = _asciiWorkerPend; _asciiWorkerPend = null;
-        if (p.asciiSubMode === asciiSubMode && p.OUT_W === OUT_W && asciiSubMode === 'classic') {
+        if (p.asciiSubMode === asciiSubMode && p.OUT_W === OUT_W &&
+            p.OUT_H === OUT_H && asciiSubMode === 'classic') {
           _dispatchAsciiWorker(p.imgData, p.sw, p.sh, p.forUpload);
         } else {
           _releaseAsciiWorkerImageData(p.imgData, p.sw, p.sh);
@@ -12925,7 +12977,10 @@ function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
     useAtlas: _asciiAtlasEnabled,
   };
   if (_asciiWorkerBusy) {
-    _asciiWorkerPend = {imgData, sw, sh, forUpload, asciiSubMode:frameMode, OUT_W:frameOutW};
+    _asciiWorkerPend = {
+      imgData, sw, sh, forUpload,
+      asciiSubMode:frameMode, OUT_W:frameOutW, OUT_H:frameOutH,
+    };
     return;
   }
   _asciiWorkerBusy = true;
@@ -12937,6 +12992,7 @@ function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
     s,
     asciiSubMode:frameMode,
     OUT_W:frameOutW,
+    OUT_H:frameOutH,
   }, [imgData.data.buffer]);
 }
 
