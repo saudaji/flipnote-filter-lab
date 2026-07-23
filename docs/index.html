@@ -23270,10 +23270,11 @@ const EDIT_CAM_FAMILIES = [
   ['DSI', 'DSI'], ['AUTO03', 'AUTO 03'], ['DLPHN', 'DLPHN'], ['CASKIA', 'CASKIA'],
   ['VFD', 'VFD'], ['OSCAM', 'OSCAM'], ['SLHT', 'SLHT'],
 ];
-// Defaults mirror the GLITCH tab's own slider defaults (see `let scrChromaVal = 0, ...`
-// near _applyScrash) but are a fresh object per layer — never shared.
+// Canonical per-layer defaults shared by EDIT and STAGE. CHROMA starts visibly
+// above zero so a new/default GLITCH layer is an effect, not a silent passthrough.
+// Every call returns a fresh object — layer state is never shared.
 function _editDefaultGlitchParams() {
-  return { chroma: 0, drip: 0, neon: 0, wave: 0, crush: 0, hue: 0, grain: 0, chaos: 0, audioReact: 100, animate: false, speed: 5 };
+  return { chroma: 12, drip: 0, neon: 0, wave: 0, crush: 0, hue: 0, grain: 0, chaos: 0, audioReact: 100, animate: false, speed: 5 };
 }
 function _editDefaultAsciiParams() {
   return { cols: 80, ink: 'auto', paper: 'auto', gradient: 'normal' };
@@ -23312,6 +23313,77 @@ function _editClampFlowParams(p) {
     aura: ['s', 'm', 'l'].includes(p.aura) ? p.aura : d.aura,
     ink: (p.ink && p.ink in TYPO_INKS) ? p.ink : d.ink,
   };
+}
+
+// ── Shared per-layer panel builders (EDIT + STAGE) ─────────────────────
+// Both surfaces use the same markup, ranges, action names and CSS. Each list
+// owns its event delegation, so identical data-* actions stay isolated.
+function _editLayerLabel(step) {
+  if (step.engine === 'cam') return 'CAM · ' + (step.family || camFamily);
+  if (step.engine === 'glitch') return 'GLITCH';
+  if (step.engine === 'ascii') return 'ASCII';
+  if (step.engine === 'flowblob') return 'FLOW';
+  return step.engine;
+}
+function _editFamPanelHtml(i, step) {
+  const active = step.family || camFamily;
+  return `<div class="edit-fam-panel" data-i="${i}">` +
+    EDIT_CAM_FAMILIES.map(([id, label]) =>
+      `<button class="edit-fam-pill${id === active ? ' active' : ''}" data-i="${i}" data-act="setfam" data-fam="${id}">${label}</button>`
+    ).join('') +
+    `</div>`;
+}
+function _editGlitchPanelHtml(i, step) {
+  const p = step.params || _editDefaultGlitchParams();
+  const row = (lbl, id, min, max, stp, val) =>
+    `<div class="edit-mini-row"><span class="emr-lbl">${lbl}</span>` +
+    `<input type="range" data-glitch-param="${id}" min="${min}" max="${max}" step="${stp}" value="${val}">` +
+    `<span class="emr-val" data-glitch-val="${id}">${val}</span></div>`;
+  return `<div class="edit-glitch-panel" data-i="${i}">` +
+    row('CHROMA', 'chroma', 0, 50, 1, p.chroma) +
+    row('DRIP', 'drip', 0, 100, 1, p.drip) +
+    row('NEON', 'neon', 0, 100, 1, p.neon) +
+    row('WAVE', 'wave', 0, 40, 1, p.wave) +
+    row('CRUSH', 'crush', 0, 100, 1, p.crush) +
+    row('HUE', 'hue', 0, 360, 1, p.hue) +
+    row('GRAIN', 'grain', 0, 100, 1, p.grain) +
+    row('CHAOS', 'chaos', 0, 100, 1, p.chaos) +
+    `<div class="edit-mini-row full"><span class="emr-lbl">AUDIO REACT</span>` +
+    `<input type="range" data-glitch-param="audioReact" min="0" max="300" step="10" value="${p.audioReact}">` +
+    `<span class="emr-val" data-glitch-val="audioReact">${p.audioReact}%</span></div>` +
+    `<div class="edit-mini-row full">` +
+    `<button class="edit-layer-cfg${p.animate ? ' active' : ''}" data-i="${i}" data-act="glitchanimate">ANIMATE</button>` +
+    `<span class="emr-lbl">SPEED</span>` +
+    `<input type="range" data-glitch-param="speed" min="1" max="20" step="1" value="${p.speed}">` +
+    `<span class="emr-val" data-glitch-val="speed">${p.speed}</span></div>` +
+    `</div>`;
+}
+function _editAsciiPanelHtml(i, step) {
+  const p = step.params || _editDefaultAsciiParams();
+  const pill = (group, key, label, val) =>
+    `<button class="edit-fam-pill${p[key] === val ? ' active' : ''}" data-i="${i}" data-act="set${group}" data-val="${val}">${label}</button>`;
+  return `<div class="edit-ascii-panel" data-i="${i}">` +
+    `<div class="edit-mini-row full"><span class="emr-lbl">COLS</span>` +
+    `<input type="range" data-ascii-param="cols" min="20" max="160" step="1" value="${p.cols}">` +
+    `<span class="emr-val" data-ascii-val="cols">${p.cols}</span></div>` +
+    `<div class="edit-mini-row full"><span class="emr-lbl">INK</span></div>` +
+    `<div class="edit-fam-panel" style="margin-bottom:6px">${Object.keys(TYPO_INKS).map(k => pill('ink', 'ink', k.toUpperCase(), k)).join('')}</div>` +
+    `<div class="edit-mini-row full"><span class="emr-lbl">PAPER</span></div>` +
+    `<div class="edit-fam-panel" style="margin-bottom:6px">${Object.keys(TYPO_PAPERS).map(k => pill('paper', 'paper', k.toUpperCase(), k)).join('')}</div>` +
+    `<div class="edit-mini-row full"><span class="emr-lbl">GRADIENT</span></div>` +
+    `<div class="edit-fam-panel">${Object.keys(ASCII_GRADIENTS).map(k => pill('gradient', 'gradient', k.toUpperCase(), k)).join('')}</div>` +
+    `</div>`;
+}
+function _editFlowPanelHtml(i, step) {
+  const p = step.params || _editDefaultFlowParams();
+  const pill = (group, key, label, val) =>
+    `<button class="edit-fam-pill${p[key] === val ? ' active' : ''}" data-i="${i}" data-act="set${group}" data-val="${val}">${label}</button>`;
+  return `<div class="edit-flow-panel" data-i="${i}">` +
+    `<div class="edit-mini-row full"><span class="emr-lbl">AURA</span></div>` +
+    `<div class="edit-fam-panel" style="margin-bottom:6px">${['s', 'm', 'l'].map(v => pill('aura', 'aura', v.toUpperCase(), v)).join('')}</div>` +
+    `<div class="edit-mini-row full"><span class="emr-lbl">INK</span></div>` +
+    `<div class="edit-fam-panel">${Object.keys(TYPO_INKS).filter(k => k !== 'auto').map(k => pill('flowink', 'ink', k.toUpperCase(), k)).join('')}</div>` +
+    `</div>`;
 }
 
 const editCanvas = document.getElementById('editCanvas');
@@ -23510,74 +23582,7 @@ function _editLoop(ts) {
     saveSettings();
   }
 
-  // ── Layer list UI ────────────────────────────────────────────────────
-  function _editLayerLabel(step) {
-    if (step.engine === 'cam') return 'CAM · ' + (step.family || camFamily);
-    if (step.engine === 'glitch') return 'GLITCH';
-    if (step.engine === 'ascii') return 'ASCII';
-    if (step.engine === 'flowblob') return 'FLOW';
-    return step.engine;
-  }
-  function _editFamPanelHtml(i, step) {
-    const active = step.family || camFamily;
-    return `<div class="edit-fam-panel" data-i="${i}">` +
-      EDIT_CAM_FAMILIES.map(([id, label]) =>
-        `<button class="edit-fam-pill${id === active ? ' active' : ''}" data-i="${i}" data-act="setfam" data-fam="${id}">${label}</button>`
-      ).join('') +
-      `</div>`;
-  }
-  function _editGlitchPanelHtml(i, step) {
-    const p = step.params || _editDefaultGlitchParams();
-    const row = (lbl, id, min, max, stp, val) =>
-      `<div class="edit-mini-row"><span class="emr-lbl">${lbl}</span>` +
-      `<input type="range" data-glitch-param="${id}" min="${min}" max="${max}" step="${stp}" value="${val}">` +
-      `<span class="emr-val" data-glitch-val="${id}">${val}</span></div>`;
-    return `<div class="edit-glitch-panel" data-i="${i}">` +
-      row('CHROMA', 'chroma', 0, 50, 1, p.chroma) +
-      row('DRIP', 'drip', 0, 100, 1, p.drip) +
-      row('NEON', 'neon', 0, 100, 1, p.neon) +
-      row('WAVE', 'wave', 0, 40, 1, p.wave) +
-      row('CRUSH', 'crush', 0, 100, 1, p.crush) +
-      row('HUE', 'hue', 0, 360, 1, p.hue) +
-      row('GRAIN', 'grain', 0, 100, 1, p.grain) +
-      row('CHAOS', 'chaos', 0, 100, 1, p.chaos) +
-      `<div class="edit-mini-row full"><span class="emr-lbl">AUDIO REACT</span>` +
-      `<input type="range" data-glitch-param="audioReact" min="0" max="300" step="10" value="${p.audioReact}">` +
-      `<span class="emr-val" data-glitch-val="audioReact">${p.audioReact}%</span></div>` +
-      `<div class="edit-mini-row full">` +
-      `<button class="edit-layer-cfg${p.animate ? ' active' : ''}" data-i="${i}" data-act="glitchanimate">ANIMATE</button>` +
-      `<span class="emr-lbl">SPEED</span>` +
-      `<input type="range" data-glitch-param="speed" min="1" max="20" step="1" value="${p.speed}">` +
-      `<span class="emr-val" data-glitch-val="speed">${p.speed}</span></div>` +
-      `</div>`;
-  }
-  function _editAsciiPanelHtml(i, step) {
-    const p = step.params || _editDefaultAsciiParams();
-    const pill = (group, key, label, val) =>
-      `<button class="edit-fam-pill${p[key] === val ? ' active' : ''}" data-i="${i}" data-act="set${group}" data-val="${val}">${label}</button>`;
-    return `<div class="edit-ascii-panel" data-i="${i}">` +
-      `<div class="edit-mini-row full"><span class="emr-lbl">COLS</span>` +
-      `<input type="range" data-ascii-param="cols" min="20" max="160" step="1" value="${p.cols}">` +
-      `<span class="emr-val" data-ascii-val="cols">${p.cols}</span></div>` +
-      `<div class="edit-mini-row full"><span class="emr-lbl">INK</span></div>` +
-      `<div class="edit-fam-panel" style="margin-bottom:6px">${Object.keys(TYPO_INKS).map(k => pill('ink', 'ink', k.toUpperCase(), k)).join('')}</div>` +
-      `<div class="edit-mini-row full"><span class="emr-lbl">PAPER</span></div>` +
-      `<div class="edit-fam-panel" style="margin-bottom:6px">${Object.keys(TYPO_PAPERS).map(k => pill('paper', 'paper', k.toUpperCase(), k)).join('')}</div>` +
-      `<div class="edit-mini-row full"><span class="emr-lbl">GRADIENT</span></div>` +
-      `<div class="edit-fam-panel">${Object.keys(ASCII_GRADIENTS).map(k => pill('gradient', 'gradient', k.toUpperCase(), k)).join('')}</div>` +
-      `</div>`;
-  }
-  function _editFlowPanelHtml(i, step) {
-    const p = step.params || _editDefaultFlowParams();
-    const pill = (group, key, label, val) =>
-      `<button class="edit-fam-pill${p[key] === val ? ' active' : ''}" data-i="${i}" data-act="set${group}" data-val="${val}">${label}</button>`;
-    return `<div class="edit-flow-panel" data-i="${i}">` +
-      `<div class="edit-mini-row full"><span class="emr-lbl">AURA</span></div>` +
-      `<div class="edit-fam-panel" style="margin-bottom:6px">${['s', 'm', 'l'].map(v => pill('aura', 'aura', v.toUpperCase(), v)).join('')}</div>` +
-      `<div class="edit-mini-row full"><span class="emr-lbl">INK</span></div>` +
-      `<div class="edit-fam-panel">${Object.keys(TYPO_INKS).filter(k => k !== 'auto').map(k => pill('flowink', 'ink', k.toUpperCase(), k)).join('')}</div>` +
-      `</div>`;
-  }
+  // ── Layer list UI — panel markup comes from shared EDIT/STAGE builders ─
   function _editRenderLayers() {
     const list = document.getElementById('editLayersList');
     list.innerHTML = '';
@@ -23623,7 +23628,7 @@ function _editLoop(ts) {
       const v = +glitchEl.value;
       if (!editSteps[i].params) editSteps[i].params = _editDefaultGlitchParams();
       editSteps[i].params[param] = v;
-      const valEl = document.querySelector(`[data-glitch-val="${param}"]`);
+      const valEl = e.currentTarget.querySelector(`[data-glitch-val="${param}"]`);
       if (valEl) valEl.textContent = param === 'audioReact' ? v + '%' : v;
       saveSettings();
       return;
@@ -23635,7 +23640,7 @@ function _editLoop(ts) {
       const v = +asciiEl.value;
       if (!editSteps[i].params) editSteps[i].params = _editDefaultAsciiParams();
       editSteps[i].params[param] = v;
-      const valEl = document.querySelector(`[data-ascii-val="${param}"]`);
+      const valEl = e.currentTarget.querySelector(`[data-ascii-val="${param}"]`);
       if (valEl) valEl.textContent = v;
       saveSettings();
     }
@@ -23955,10 +23960,6 @@ function _editLoop(ts) {
 // reopened (window._stageState — see declaration near saveSettings).
 // ════════════════════════════════════════════════════════════════════
 const STAGE_MAX_LAYERS = 4;
-const STAGE_CAM_FAMILIES = [
-  ['DSI', 'DSI'], ['AUTO03', 'AUTO 03'], ['DLPHN', 'DLPHN'], ['CASKIA', 'CASKIA'],
-  ['VFD', 'VFD'], ['OSCAM', 'OSCAM'], ['SLHT', 'SLHT'],
-];
 function _stageDefaultVhs() {
   return { enabled: false, intensity: 50, tracking: 30, chromaBleed: 40, scanlines: 50, jitter: 20, warble: 15 };
 }
@@ -24046,6 +24047,10 @@ function _stagePipelineForRender(state) {
     window._stageState = _stageCtlState;
     saveSettings();
   }
+  // Normalize the in-memory snapshot immediately, but do not schedule a
+  // settings write until STAGE is actually entered: a pending unrelated
+  // pagehide must never overwrite another mode's just-edited persistence.
+  window._stageState = _stageCtlState;
 
   // ── Throttled broadcast (~30Hz, trailing) ─────────────────────────────
   function _stageBroadcastNow() {
@@ -24065,25 +24070,7 @@ function _stagePipelineForRender(state) {
     _stageBroadcastState();
   }
 
-  // ── Layer list UI (compact duplicate of EDIT's builder — see
-  // _editRenderLayers/_editGlitchPanelHtml near the EDIT block for the
-  // richer reference version; STAGE keeps only bypass/reorder/remove +
-  // CAM family, no deep per-parameter panels, to fit a remote control
-  // surface). ──────────────────────────────────────────────────────────
-  function _stageLayerLabel(step) {
-    if (step.engine === 'cam') return 'CAM · ' + (step.family || camFamily);
-    if (step.engine === 'glitch') return 'GLITCH';
-    if (step.engine === 'ascii') return 'ASCII';
-    if (step.engine === 'flowblob') return 'FLOW';
-    return step.engine;
-  }
-  function _stageFamPanelHtml(i, step) {
-    const active = step.family || camFamily;
-    return `<div class="edit-fam-panel" data-i="${i}">` +
-      STAGE_CAM_FAMILIES.map(([id, label]) =>
-        `<button class="edit-fam-pill${id === active ? ' active' : ''}" data-i="${i}" data-act="setfam" data-fam="${id}">${label}</button>`
-      ).join('') + `</div>`;
-  }
+  // ── Layer list UI — the exact same expandable builders as EDIT ───────
   function _stageRenderLayers() {
     const list = document.getElementById('stageLayersList');
     if (!list) return;
@@ -24092,16 +24079,25 @@ function _stagePipelineForRender(state) {
       const row = document.createElement('div');
       row.className = 'edit-layer-row' + (step.on ? '' : ' bypassed');
       const famOpen = _stageExpandedPanel && _stageExpandedPanel.kind === 'fam' && _stageExpandedPanel.i === i;
+      const glitchOpen = _stageExpandedPanel && _stageExpandedPanel.kind === 'glitch' && _stageExpandedPanel.i === i;
+      const asciiOpen = _stageExpandedPanel && _stageExpandedPanel.kind === 'ascii' && _stageExpandedPanel.i === i;
+      const flowOpen = _stageExpandedPanel && _stageExpandedPanel.kind === 'flow' && _stageExpandedPanel.i === i;
       row.innerHTML = `
         <button class="edit-layer-bypass${step.on ? ' on' : ''}" data-i="${i}" data-act="bypass" title="bypass">◉</button>
-        <span class="edit-layer-name">${_stageLayerLabel(step)}</span>
+        <span class="edit-layer-name">${_editLayerLabel(step)}</span>
         ${step.engine === 'cam' ? `<button class="edit-layer-cfg${famOpen ? ' active' : ''}" data-i="${i}" data-act="famtoggle" title="familia">FAM</button>` : ''}
+        ${step.engine === 'glitch' ? `<button class="edit-layer-cfg${glitchOpen ? ' active' : ''}" data-i="${i}" data-act="glitchtoggle" title="parámetros">⚙</button>` : ''}
+        ${step.engine === 'ascii' ? `<button class="edit-layer-cfg${asciiOpen ? ' active' : ''}" data-i="${i}" data-act="asciitoggle" title="parámetros">⚙</button>` : ''}
+        ${step.engine === 'flowblob' ? `<button class="edit-layer-cfg${flowOpen ? ' active' : ''}" data-i="${i}" data-act="flowtoggle" title="parámetros">⚙</button>` : ''}
         <button class="edit-layer-btn" data-i="${i}" data-act="up" ${i === 0 ? 'disabled' : ''}>▲</button>
         <button class="edit-layer-btn" data-i="${i}" data-act="down" ${i === _stageCtlState.pipeline.length - 1 ? 'disabled' : ''}>▼</button>
         <button class="edit-layer-btn remove" data-i="${i}" data-act="remove">✕</button>
       `;
       list.appendChild(row);
-      if (famOpen) list.insertAdjacentHTML('beforeend', _stageFamPanelHtml(i, step));
+      if (famOpen) list.insertAdjacentHTML('beforeend', _editFamPanelHtml(i, step));
+      if (glitchOpen) list.insertAdjacentHTML('beforeend', _editGlitchPanelHtml(i, step));
+      if (asciiOpen) list.insertAdjacentHTML('beforeend', _editAsciiPanelHtml(i, step));
+      if (flowOpen) list.insertAdjacentHTML('beforeend', _editFlowPanelHtml(i, step));
     });
     const full = _stageCtlState.pipeline.length >= STAGE_MAX_LAYERS;
     ['btnStageAddCam', 'btnStageAddGlitch', 'btnStageAddAscii', 'btnStageAddFlow'].forEach(id => {
@@ -24109,7 +24105,37 @@ function _stagePipelineForRender(state) {
       if (el) el.disabled = full;
     });
   }
-  document.getElementById('stageLayersList').addEventListener('click', e => {
+  const stageLayersList = document.getElementById('stageLayersList');
+  stageLayersList.addEventListener('input', e => {
+    const glitchEl = e.target.closest('input[data-glitch-param]');
+    const asciiEl = e.target.closest('input[data-ascii-param]');
+    if (glitchEl) {
+      const i = _stageExpandedPanel ? _stageExpandedPanel.i : null;
+      const step = i == null ? null : _stageCtlState.pipeline[i];
+      if (!step || step.engine !== 'glitch') return;
+      const param = glitchEl.dataset.glitchParam;
+      const value = +glitchEl.value;
+      if (!step.params) step.params = _editDefaultGlitchParams();
+      step.params[param] = value;
+      const valueEl = stageLayersList.querySelector(`[data-glitch-val="${param}"]`);
+      if (valueEl) valueEl.textContent = param === 'audioReact' ? value + '%' : value;
+      _stageCommit();
+      return;
+    }
+    if (asciiEl) {
+      const i = _stageExpandedPanel ? _stageExpandedPanel.i : null;
+      const step = i == null ? null : _stageCtlState.pipeline[i];
+      if (!step || step.engine !== 'ascii') return;
+      const param = asciiEl.dataset.asciiParam;
+      const value = +asciiEl.value;
+      if (!step.params) step.params = _editDefaultAsciiParams();
+      step.params[param] = value;
+      const valueEl = stageLayersList.querySelector(`[data-ascii-val="${param}"]`);
+      if (valueEl) valueEl.textContent = value;
+      _stageCommit();
+    }
+  });
+  stageLayersList.addEventListener('click', e => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     const i = +btn.dataset.i, act = btn.dataset.act, steps = _stageCtlState.pipeline;
@@ -24118,7 +24144,43 @@ function _stagePipelineForRender(state) {
     else if (act === 'down' && i < steps.length - 1) { const t = steps[i + 1]; steps[i + 1] = steps[i]; steps[i] = t; _stageExpandedPanel = null; }
     else if (act === 'remove') { steps.splice(i, 1); if (!steps.length) steps.push({ engine: 'glitch', on: true, params: _editDefaultGlitchParams() }); _stageExpandedPanel = null; }
     else if (act === 'famtoggle') { _stageExpandedPanel = (_stageExpandedPanel && _stageExpandedPanel.kind === 'fam' && _stageExpandedPanel.i === i) ? null : { i, kind: 'fam' }; }
+    else if (act === 'glitchtoggle') {
+      if (!steps[i].params) steps[i].params = _editDefaultGlitchParams();
+      _stageExpandedPanel = (_stageExpandedPanel && _stageExpandedPanel.kind === 'glitch' && _stageExpandedPanel.i === i) ? null : { i, kind: 'glitch' };
+    }
+    else if (act === 'asciitoggle') {
+      if (!steps[i].params) steps[i].params = _editDefaultAsciiParams();
+      _stageExpandedPanel = (_stageExpandedPanel && _stageExpandedPanel.kind === 'ascii' && _stageExpandedPanel.i === i) ? null : { i, kind: 'ascii' };
+    }
+    else if (act === 'flowtoggle') {
+      if (!steps[i].params) steps[i].params = _editDefaultFlowParams();
+      _stageExpandedPanel = (_stageExpandedPanel && _stageExpandedPanel.kind === 'flow' && _stageExpandedPanel.i === i) ? null : { i, kind: 'flow' };
+    }
     else if (act === 'setfam') { steps[i].family = btn.dataset.fam; }
+    else if (act === 'setink') {
+      if (!steps[i].params) steps[i].params = _editDefaultAsciiParams();
+      steps[i].params.ink = btn.dataset.val;
+    }
+    else if (act === 'setpaper') {
+      if (!steps[i].params) steps[i].params = _editDefaultAsciiParams();
+      steps[i].params.paper = btn.dataset.val;
+    }
+    else if (act === 'setgradient') {
+      if (!steps[i].params) steps[i].params = _editDefaultAsciiParams();
+      steps[i].params.gradient = btn.dataset.val;
+    }
+    else if (act === 'setaura') {
+      if (!steps[i].params) steps[i].params = _editDefaultFlowParams();
+      steps[i].params.aura = btn.dataset.val;
+    }
+    else if (act === 'setflowink') {
+      if (!steps[i].params) steps[i].params = _editDefaultFlowParams();
+      steps[i].params.ink = btn.dataset.val;
+    }
+    else if (act === 'glitchanimate') {
+      if (!steps[i].params) steps[i].params = _editDefaultGlitchParams();
+      steps[i].params.animate = !steps[i].params.animate;
+    }
     _stageRenderLayers();
     _stageCommit();
   });
@@ -24314,6 +24376,7 @@ function _stagePipelineForRender(state) {
 
   // ── Tab entry/exit hooks — called from switchTab() ────────────────────
   window._stageOnEnter = function () {
+    _stageSyncPersisted();
     _stageSyncSourceUI();
     _stageSyncVhsUI();
     _stageRenderLayers();
