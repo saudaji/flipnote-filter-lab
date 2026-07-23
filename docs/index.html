@@ -25097,7 +25097,14 @@ function _stagePipelineForRender(state) {
       const sel = document.getElementById('stageAudioDevice');
       if (sel) {
         const cur = _stageCtlState.source.audioDeviceId;
-        sel.innerHTML = (msg.list || []).map(d => `<option value="${d.deviceId}"${d.deviceId === cur ? ' selected' : ''}>${d.label || d.deviceId}</option>`).join('');
+        const options = (Array.isArray(msg.list) ? msg.list : []).map(d => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || d.deviceId;
+          opt.selected = d.deviceId === cur;
+          return opt;
+        });
+        sel.replaceChildren(...options);
       }
     } else if (msg.type === 'status') {
       _stageRecording = !!msg.recording;
