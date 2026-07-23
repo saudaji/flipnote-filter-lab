@@ -683,8 +683,9 @@
     /* ── Tabs ── */
     .tab-bar {
       position:fixed; top:0; left:0; right:0; z-index:20;
-      height:40px; display:flex;
+      height:calc(40px + env(safe-area-inset-top, 0px)); display:flex;
       border-bottom:2px solid var(--dark); background:var(--ink);
+      padding-top:env(safe-area-inset-top, 0px);
       padding-left:env(safe-area-inset-left, 0px);
       padding-right:env(safe-area-inset-right, 0px);
     }
@@ -702,14 +703,14 @@
     /* ── Camera canvas ── */
     #display {
       image-rendering:pixelated; image-rendering:crisp-edges;
-      position:fixed; top:40px; bottom:96px; left:0; right:0; margin:auto;
+      position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:96px; left:0; right:0; margin:auto;
     }
     /* ════════════════════════════════════════════════════
        ASCII AREA — wraps canvas + panel
     ════════════════════════════════════════════════════ */
     #asciiArea {
       display:none;
-      position:fixed; top:40px; bottom:96px; left:0; right:0;
+      position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:96px; left:0; right:0;
       align-items:center; justify-content:center;
     }
     #asciiArea.visible { display:flex; }
@@ -810,7 +811,7 @@
        que se apilan debajo de esto en desktop (en móvil ambos se docken inline vía
        .cam-mobile-inline, así que no compiten por el riel). */
     .palettes {
-      position:fixed; top:206px; right:12px;
+      position:fixed; top:calc(206px + env(safe-area-inset-top, 0px)); right:12px;
       display:flex; flex-direction:column; gap:7px; z-index:25;
       min-width:58px;
     }
@@ -1354,7 +1355,7 @@
 
     /* ── Flip ── */
     #btnFlip {
-      position:fixed; top:48px; left:calc(12px + env(safe-area-inset-left, 0px)); z-index:10;
+      position:fixed; top:calc(48px + env(safe-area-inset-top, 0px)); left:calc(12px + env(safe-area-inset-left, 0px)); z-index:10;
       background:none; border:none; cursor:pointer;
       color:var(--paper); font-family:monospace;
       font-size:10px; letter-spacing:1px;
@@ -1366,7 +1367,7 @@
        CAPTURAR visible (top:196, max-height:300 → bottom 496) en desktop; en móvil se docken
        inline (.cam-mobile-inline) así que esta posición fixed no aplica ahí. */
     #camFpsCtrl {
-      position:fixed; top:510px; right:12px; z-index:10;
+      position:fixed; top:calc(510px + env(safe-area-inset-top, 0px)); right:12px; z-index:10;
       display:flex; flex-direction:column; align-items:flex-end; gap:4px;
     }
     #camFpsCtrl label { color:var(--dark); font-size:9px; font-family:monospace; letter-spacing:.5px; cursor:pointer; }
@@ -1378,7 +1379,7 @@
       display:flex; align-items:center; gap:4px;
     }
     #camZoomCtrl {
-      position:fixed; top:564px; right:12px; z-index:10;
+      position:fixed; top:calc(564px + env(safe-area-inset-top, 0px)); right:12px; z-index:10;
       display:none; flex-direction:column; align-items:flex-end; gap:4px;
       padding:6px 8px;
       border:1px solid rgba(255,255,255,.08);
@@ -1400,7 +1401,7 @@
 
     /* ── Aspect ratio selector ── */
     #camAspect {
-      position:fixed; top:118px; left:8px; z-index:10;
+      position:fixed; top:calc(118px + env(safe-area-inset-top, 0px)); left:8px; z-index:10;
       display:none; flex-direction:column; gap:3px;
     }
     .asp-btn {
@@ -1482,6 +1483,15 @@
       font-family:monospace; user-select:none; line-height:1;
       animation:splash-flicker 2s ease-in-out infinite;
     }
+    .flip-build-tag {
+      position:absolute;
+      right:calc(12px + env(safe-area-inset-right, 0px));
+      bottom:calc(12px + env(safe-area-inset-bottom, 0px));
+      z-index:2; pointer-events:none; user-select:none;
+      color:rgba(200,160,0,.78); font-family:monospace;
+      font-size:10px; line-height:1; letter-spacing:.08em;
+      text-shadow:0 1px 2px #000;
+    }
     @keyframes splash-flicker {
       0%,100%{opacity:.25} 50%{opacity:.75}
     }
@@ -1489,7 +1499,7 @@
     /* ── Library section ── */
     /* ── SCRASH — glitch art camera ── */
     #scrashArea {
-      display:none; position:fixed; top:40px; bottom:96px; left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:96px; left:0; right:0;
       align-items:center; justify-content:center; background:#000;
     }
     #scrashArea.visible { display:flex; }
@@ -1576,7 +1586,7 @@
         bottom:96px; /* override --scrash-stack-bottom; sidebar doesn't need vertical offset */
       }
       body.scrash-hud-open #scrashControls {
-        top:40px;
+        top:calc(40px + env(safe-area-inset-top, 0px));
         bottom:96px;
         left:auto;
         right:0;
@@ -1592,7 +1602,7 @@
        FUSION — live camera → CAM family → GLITCH pipeline
     ══════════════════════════════════════════════════ */
     #fusionArea {
-      display:none; position:fixed; top:40px; bottom:calc(96px + var(--fusion-hud-h, 76px)); left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:calc(96px + var(--fusion-hud-h, 76px)); left:0; right:0;
       align-items:center; justify-content:center; background:#000;
     }
     #fusionArea.visible { display:flex; }
@@ -1630,7 +1640,7 @@
 
     /* ── Upload section ── */
     #uploadSection {
-      display:none; position:fixed; top:40px; bottom:96px; left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:96px; left:0; right:0;
       flex-direction:column; align-items:center; justify-content:center;
       overflow-y:auto; padding:16px; gap:14px;
     }
@@ -1915,7 +1925,7 @@
        SILHOUETTE FLOW — isolated component
     ══════════════════════════════════════════════════ */
     #sflowArea {
-      display:none; position:fixed; top:40px; bottom:calc(96px + var(--sflow-hud-h, 0px)); left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:calc(96px + var(--sflow-hud-h, 0px)); left:0; right:0;
       background:#000; align-items:center; justify-content:center;
     }
     #sflowArea.visible { display:flex; }
@@ -1978,7 +1988,7 @@
        chained CAM/GLITCH steps via the PIPELINE KEYSTONE)
     ══════════════════════════════════════════════════ */
     #editArea {
-      display:none; position:fixed; top:40px; bottom:calc(96px + var(--edit-hud-h, 0px)); left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:calc(96px + var(--edit-hud-h, 0px)); left:0; right:0;
       align-items:center; justify-content:center; background:#000;
     }
     #editArea.visible { display:flex; }
@@ -2083,7 +2093,7 @@
     ══════════════════════════════════════════════════ */
     #stageArea { display:none; padding:8px 10px 4px; }
     #stageArea.visible {
-      display:block; position:fixed; top:40px; bottom:96px; left:0; right:0;
+      display:block; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:96px; left:0; right:0;
       overflow-y:auto; -webkit-overflow-scrolling:touch;
     }
     .stage-ctl-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0; }
@@ -2224,7 +2234,7 @@
 
     /* ── SONO area ── */
     #sonoArea {
-      display:none; position:fixed; top:40px; bottom:var(--sono-stack-bottom, 220px); left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:var(--sono-stack-bottom, 220px); left:0; right:0;
       align-items:center; justify-content:center;
     }
     #sonoArea.visible { display:flex; }
@@ -2232,7 +2242,7 @@
 
     /* ── SONO permission overlay ── */
     #sonoPerm {
-      display:none; position:fixed; top:40px; bottom:var(--sono-stack-bottom, 220px); left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:var(--sono-stack-bottom, 220px); left:0; right:0;
       flex-direction:column; align-items:center; justify-content:center;
       gap:18px; padding:32px; z-index:11;
     }
@@ -2292,7 +2302,7 @@
        WMP XP VISUALIZER
     ══════════════════════════════════════════════════════ */
     #wmpArea {
-      display:none; position:fixed; top:40px; bottom:calc(96px + var(--wmp-hud-h, 72px)); left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:calc(96px + var(--wmp-hud-h, 72px)); left:0; right:0;
       background:#000; overflow:hidden;
     }
     #wmpArea.visible { display:block; }
@@ -2300,7 +2310,7 @@
 
     /* ── WMP permission / source select overlay ── */
     #wmpPerm {
-      display:none; position:fixed; top:40px; bottom:calc(96px + var(--wmp-hud-h, 72px)); left:0; right:0;
+      display:none; position:fixed; top:calc(40px + env(safe-area-inset-top, 0px)); bottom:calc(96px + var(--wmp-hud-h, 72px)); left:0; right:0;
       flex-direction:column; align-items:center; justify-content:center;
       gap:20px; padding:32px; z-index:11; background:rgba(0,0,0,.85);
     }
@@ -2424,16 +2434,16 @@
     @media (min-width:769px) and (min-height:501px) {
       #btnAudioIO { display:flex; }
       #audioIOPanel {
-        position:fixed; top:148px; right:calc(12px + env(safe-area-inset-right, 0px)); width:260px; height:auto;
+        position:fixed; top:calc(148px + env(safe-area-inset-top, 0px)); right:calc(12px + env(safe-area-inset-right, 0px)); width:260px; height:auto;
         max-height:300px; overflow-y:auto; box-sizing:border-box;
         background:var(--ink); border:1px solid rgba(255,255,255,0.14); border-radius:10px;
         padding:12px; z-index:122; display:none; flex-direction:column; gap:8px;
         box-shadow:0 8px 24px rgba(0,0,0,0.35);
       }
-      body.ext-audio #audioIOPanel { top:196px; }
+      body.ext-audio #audioIOPanel { top:calc(196px + env(safe-area-inset-top, 0px)); }
       #audioIOPanel.open { display:flex; }
       #btnAudioIO {
-        position:fixed; top:100px; right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
+        position:fixed; top:calc(100px + env(safe-area-inset-top, 0px)); right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
         width:44px; height:44px; border-radius:50%;
         background:rgba(26,26,30,0.92); border:1px solid rgba(255,255,255,0.14);
         color:#F0EDE6; font-family:monospace; font-size:8px; letter-spacing:0.5px;
@@ -2452,7 +2462,7 @@
       #btnExtCapture {
         /* slot3 del riel — solo visible con ext-audio activo; el panel de audio se
            corre a top:196 (ver arriba) para no taparlo cuando ambos coexisten */
-        position:fixed; top:148px; right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
+        position:fixed; top:calc(148px + env(safe-area-inset-top, 0px)); right:calc(12px + env(safe-area-inset-right, 0px)); z-index:121;
         width:44px; height:44px; border-radius:50%;
         background:var(--paper); color:var(--ink); border:none;
         font-family:monospace; font-size:8px; font-weight:bold; letter-spacing:0.5px;
@@ -2709,7 +2719,7 @@
     /* ── V50: Toast notifications ── */
     .flip-toast-container {
       position: fixed;
-      top: 50px;
+      top: calc(50px + env(safe-area-inset-top, 0px));
       left: 50%;
       transform: translateX(-50%);
       z-index: 9999;
@@ -3194,6 +3204,7 @@
       <span class="splash-door-sub">estación en vivo · proyector</span>
     </button>
   </div>
+  <div class="flip-build-tag" data-flip-build aria-label="Versión de FLIP"></div>
 </div>
 
 <div id="flash"></div>
@@ -14764,6 +14775,19 @@ function _injectFlipSettingsStyles() {
       z-index: 1;
       -webkit-overflow-scrolling: touch;
     }
+    .flip-settings-build {
+      flex: 0 0 auto;
+      padding: 7px 16px calc(7px + env(safe-area-inset-bottom, 0px));
+      border-top: 1px solid var(--flip-border);
+      color: var(--flip-text-secondary);
+      font-family: monospace;
+      font-size: 9px;
+      line-height: 1;
+      letter-spacing: 0.1em;
+      text-align: right;
+      position: relative;
+      z-index: 1;
+    }
     .flip-settings-section { display: none; }
     .flip-settings-section.active { display: block; }
     .flip-settings-block { margin-bottom: 18px; }
@@ -16018,6 +16042,7 @@ function _ensureFlipSettingsUI() {
         <div id="flipSettingsFormat" class="flip-settings-section active"></div>
         <div id="flipSettingsAudio" class="flip-settings-section"></div>
       </div>
+      <div class="flip-settings-build" data-flip-build aria-label="Versión de FLIP"></div>
     </section>
   `);
   _flipSettingsDom = {
@@ -24946,19 +24971,43 @@ function _initFlipOsBoot() {
 
 _initFlipOsBoot();
 
+function _syncFlipBuildTags(updating = false) {
+  const label = updating ? `${FLIP_BUILD} → actualizando…` : FLIP_BUILD;
+  document.querySelectorAll('[data-flip-build]').forEach(tag => {
+    tag.textContent = label;
+  });
+}
+
+// El orquestador la actualiza junto al bump de CACHE en cada merge.
+const FLIP_BUILD = 'v90';
+_syncFlipBuildTags();
+
 if ('serviceWorker' in navigator) {
   const hadServiceWorkerController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register('sw.js?v=20260415-flip-os-beta-1').then(reg => {
-    reg.update().catch(()=>{});
-    reg.addEventListener('updatefound', () => {
+    let observedWorker = null;
+    const observeInstallingWorker = () => {
       const installing = reg.installing;
-      if (!installing) return;
+      if (!installing || installing === observedWorker) return;
+      observedWorker = installing;
+      if (hadServiceWorkerController || reg.active) _syncFlipBuildTags(true);
       installing.addEventListener('statechange', function() {
+        if (this.state === 'redundant') {
+          _syncFlipBuildTags(false);
+          return;
+        }
         if (this.state !== 'activated') return;
-        if (!hadServiceWorkerController || !navigator.serviceWorker.controller) return;
+        if (!hadServiceWorkerController || !navigator.serviceWorker.controller) {
+          _syncFlipBuildTags(false);
+          return;
+        }
         _reloadFlipUpdateWhenSafe();
       });
-    });
+    };
+    if (reg.waiting) _syncFlipBuildTags(true);
+    observeInstallingWorker();
+    reg.addEventListener('updatefound', observeInstallingWorker);
+    reg.update().catch(()=>{});
   }).catch(()=>{});
 }
 </script>
