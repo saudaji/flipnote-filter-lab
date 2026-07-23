@@ -9791,6 +9791,9 @@ const _slhtVY = new Float32Array(SLHT_MAX_P);  // velocity y
 const _slhtPA = new Float32Array(SLHT_MAX_P);  // angle (radians)
 const _slhtPC = new Float32Array(SLHT_MAX_P);  // cos(angle) — cached for render
 const _slhtPS = new Float32Array(SLHT_MAX_P);  // sin(angle)
+const SLHT_ATLAS_ANGLES = 180;
+const _slhtPB = new Uint8Array(SLHT_MAX_P);     // 2-degree atlas angle bucket
+const _slhtPI = new Uint16Array(SLHT_MAX_P);    // flat glyph+angle sprite index
 const _slhtPL = new Float32Array(SLHT_MAX_P);  // life [0,1]
 const _slhtPG = new Uint8Array(SLHT_MAX_P);    // glyph index
 let   _slhtPInited  = false;
@@ -9813,6 +9816,187 @@ function _slhtNoise(xi, yi) {
 // ── Glyph vocabulary (weighted toward dashes) ─────────────────────
 const SLHT_GLYPHS = ['-','-','-','-','-','–','–','/','\\','|'];
 const SLHT_NG = SLHT_GLYPHS.length;
+const _SLHT_GLYPH_UNIQUE_INDEX = new Uint8Array([0,0,0,0,0,1,1,2,3,4]);
+const _slhtGlyphAtlases = new Map();
+let _slhtAtlasEnabled = true;
+
+function _slhtGetGlyphAtlas(ctx, glyphSz) {
+  const font = ctx.font;
+  const color = String(ctx.fillStyle);
+  const key = `${font}\u0000${color}`;
+  const cached = _slhtGlyphAtlases.get(key);
+  if (cached) {
+    _slhtGlyphAtlases.delete(key);
+    _slhtGlyphAtlases.set(key, cached);
+    return cached;
+  }
+
+  const glyphs = [...new Set(SLHT_GLYPHS)];
+  const angleSteps = SLHT_ATLAS_ANGLES;
+  const spriteCount = glyphs.length * angleSteps;
+  const columns = 24;
+  const tile = Math.max(20, Math.ceil(glyphSz * 4));
+  const rows = Math.ceil(spriteCount / columns);
+  const canvas = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(tile * columns, tile * rows)
+    : document.createElement('canvas');
+  canvas.width = tile * columns;
+  canvas.height = tile * rows;
+  const atlasCtx = canvas.getContext('2d');
+  atlasCtx.font = font;
+  atlasCtx.textAlign = 'center';
+  atlasCtx.textBaseline = 'middle';
+  atlasCtx.fillStyle = color;
+  const sourceX = new Uint16Array(spriteCount);
+  const sourceY = new Uint16Array(spriteCount);
+  const spriteW = new Uint8Array(spriteCount);
+  const spriteH = new Uint8Array(spriteCount);
+  const spriteDX = new Int8Array(spriteCount);
+  const spriteDY = new Int8Array(spriteCount);
+  for (let glyphIndex = 0; glyphIndex < glyphs.length; glyphIndex++) {
+    for (let angleIndex = 0; angleIndex < angleSteps; angleIndex++) {
+      const index = glyphIndex * angleSteps + angleIndex;
+      const sx = (index % columns) * tile;
+      const sy = Math.floor(index / columns) * tile;
+      atlasCtx.save();
+      atlasCtx.translate(sx + tile * 0.5, sy + tile * 0.5);
+      atlasCtx.rotate(angleIndex / angleSteps * Math.PI * 2);
+      atlasCtx.fillText(glyphs[glyphIndex], 0, 0);
+      atlasCtx.restore();
+    }
+  }
+  // One read of the completed sheet preserves the original alpha-tight source
+  // rectangles without 900 getImageData calls or 900 temporary bitmaps.
+  const pixels = atlasCtx.getImageData(0, 0, canvas.width, canvas.height).data;
+  for (let index = 0; index < spriteCount; index++) {
+    const sx = (index % columns) * tile;
+    const sy = Math.floor(index / columns) * tile;
+    let minX = tile, minY = tile, maxX = -1, maxY = -1;
+    for (let y = 0; y < tile; y++) {
+      const rowOffset = ((sy + y) * canvas.width + sx) * 4;
+      for (let x = 0; x < tile; x++) {
+        if (pixels[rowOffset + x * 4 + 3] === 0) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (maxX < minX || maxY < minY) minX = minY = maxX = maxY = 0;
+    sourceX[index] = sx + minX;
+    sourceY[index] = sy + minY;
+    spriteW[index] = maxX - minX + 1;
+    spriteH[index] = maxY - minY + 1;
+    spriteDX[index] = minX - tile * 0.5;
+    spriteDY[index] = minY - tile * 0.5;
+  }
+  const cellW = Math.max(...spriteW);
+  const cellH = Math.max(...spriteH);
+  const packedColumns = 64;
+  const packedRows = Math.ceil(spriteCount / packedColumns);
+  const packedCanvas = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(cellW * packedColumns, cellH * packedRows)
+    : document.createElement('canvas');
+  packedCanvas.width = cellW * packedColumns;
+  packedCanvas.height = cellH * packedRows;
+  const packedCtx = packedCanvas.getContext('2d');
+  for (let index = 0; index < spriteCount; index++) {
+    const packedX = (index % packedColumns) * cellW;
+    const packedY = Math.floor(index / packedColumns) * cellH;
+    packedCtx.drawImage(
+      canvas,
+      sourceX[index], sourceY[index], spriteW[index], spriteH[index],
+      packedX, packedY, spriteW[index], spriteH[index]
+    );
+    sourceX[index] = packedX;
+    sourceY[index] = packedY;
+  }
+  const sheet = packedCanvas.transferToImageBitmap
+    ? packedCanvas.transferToImageBitmap()
+    : packedCanvas;
+  const atlas = {
+    canvas:sheet,
+    sourceX,
+    sourceY,
+    spriteW,
+    spriteH,
+    spriteDX,
+    spriteDY,
+    tile,
+    angleSteps,
+  };
+  _slhtGlyphAtlases.set(key, atlas);
+  if (_slhtGlyphAtlases.size > 4) {
+    const oldestKey = _slhtGlyphAtlases.keys().next().value;
+    const oldest = _slhtGlyphAtlases.get(oldestKey);
+    oldest?.canvas?.close?.();
+    _slhtGlyphAtlases.delete(oldestKey);
+  }
+  return atlas;
+}
+
+function _slhtRenderGlyphPhase(ctx, CW, CH, useAtlas = _slhtAtlasEnabled) {
+  const W = SLHT_AW, H = SLHT_AH;
+  const haloMax     = _slhtMaxDist;
+  const contourBand = Math.max(1, haloMax * 0.35);
+  const fillN       = slhtFillAmt / 100;
+  const glyphSz     = slhtGlyphSz;
+
+  ctx.font           = `${glyphSz}px monospace`;
+  ctx.textAlign      = 'center';
+  ctx.textBaseline   = 'middle';
+  ctx.fillStyle      = '#000000';
+  const atlas = useAtlas ? _slhtGetGlyphAtlas(ctx, glyphSz) : null;
+
+  for (let i = 0; i < _slhtActiveP; i++) {
+    const life = _slhtPL[i];
+    if (life <= 0) continue;
+
+    const px = _slhtPX[i], py = _slhtPY[i];
+    const mx = Math.max(0, Math.min(W - 1, ((px / CW) * W) | 0));
+    const my = Math.max(0, Math.min(H - 1, ((py / CH) * H) | 0));
+    const mi = my * W + mx;
+
+    const inside = _slhtMask[mi] >= 0.5;
+    const d      = _slhtDist[mi];
+
+    let alpha = life;
+    if (inside) {
+      if (d > contourBand) {
+        // Interior: visibility scales with fill amount
+        alpha *= 0.25 + 0.75 * fillN;
+      }
+      // Contour band: full opacity (alpha = life)
+    } else {
+      if (d < haloMax) {
+        // Halo: fade with distance
+        alpha *= 0.15 + 0.70 * (1.0 - d / haloMax);
+      } else {
+        continue; // too far outside, invisible
+      }
+    }
+    if (alpha < 0.04) continue;
+
+    // Pre-rotated atlas avoids both text rasterization and a transform per glyph.
+    ctx.globalAlpha = alpha > 1 ? 1 : alpha;
+    if (atlas) {
+      const spriteIndex = _slhtPI[i];
+      ctx.drawImage(
+        atlas.canvas,
+        atlas.sourceX[spriteIndex], atlas.sourceY[spriteIndex],
+        atlas.spriteW[spriteIndex], atlas.spriteH[spriteIndex],
+        px + atlas.spriteDX[spriteIndex], py + atlas.spriteDY[spriteIndex],
+        atlas.spriteW[spriteIndex], atlas.spriteH[spriteIndex]
+      );
+    } else {
+      ctx.setTransform(_slhtPC[i], _slhtPS[i], -_slhtPS[i], _slhtPC[i], px, py);
+      ctx.fillText(SLHT_GLYPHS[_slhtPG[i]], 0, 0);
+    }
+  }
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1.0;
+}
 
 // ── MediaPipe URLs (same model as SFLOW tab) ──────────────────────
 const SLHT_MP_WASM  = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
@@ -9977,8 +10161,10 @@ function _slhtInitParticles(CW, CH) {
     _slhtPA[i] = a;
     _slhtPC[i] = Math.cos(a);
     _slhtPS[i] = Math.sin(a);
+    _slhtPB[i] = Math.round(a / (Math.PI * 2) * SLHT_ATLAS_ANGLES) % SLHT_ATLAS_ANGLES;
     _slhtPL[i] = Math.random();
     _slhtPG[i] = Math.floor(Math.random() * SLHT_NG);
+    _slhtPI[i] = _SLHT_GLYPH_UNIQUE_INDEX[_slhtPG[i]] * SLHT_ATLAS_ANGLES + _slhtPB[i];
   }
   _slhtPInited = true;
 }
@@ -10012,8 +10198,10 @@ function _slhtSpawnParticle(i, CW, CH) {
   _slhtPA[i] = a;
   _slhtPC[i] = Math.cos(a);
   _slhtPS[i] = Math.sin(a);
+  _slhtPB[i] = Math.round(a / (Math.PI * 2) * SLHT_ATLAS_ANGLES) % SLHT_ATLAS_ANGLES;
   _slhtPL[i] = 0.25 + Math.random() * 0.75;
   _slhtPG[i] = Math.floor(Math.random() * SLHT_NG);
+  _slhtPI[i] = _SLHT_GLYPH_UNIQUE_INDEX[_slhtPG[i]] * SLHT_ATLAS_ANGLES + _slhtPB[i];
 }
 
 // ── Main SLHT renderer ────────────────────────────────────────────
@@ -10207,6 +10395,8 @@ function renderSlht(source, srcW, srcH, targetCtx, mirror) {
       _slhtPA[i] = angle;
       _slhtPC[i] = Math.cos(angle);
       _slhtPS[i] = Math.sin(angle);
+      _slhtPB[i] = ((Math.round(angle / (Math.PI * 2) * SLHT_ATLAS_ANGLES) % SLHT_ATLAS_ANGLES) + SLHT_ATLAS_ANGLES) % SLHT_ATLAS_ANGLES;
+      _slhtPI[i] = _SLHT_GLYPH_UNIQUE_INDEX[_slhtPG[i]] * SLHT_ATLAS_ANGLES + _slhtPB[i];
       _slhtPL[i] = life;
     }
   }
@@ -10260,56 +10450,7 @@ function renderSlht(source, srcW, srcH, targetCtx, mirror) {
 
   // 4. Draw particles — crisp black glyph marks
   if (!_slhtFieldOK) return;
-
-  const W = SLHT_AW, H = SLHT_AH;
-  const haloMax     = _slhtMaxDist;
-  const contourBand = Math.max(1, haloMax * 0.35);
-  const fillN       = slhtFillAmt / 100;
-  const glyphSz     = slhtGlyphSz;
-
-  ctx.font           = `${glyphSz}px monospace`;
-  ctx.textAlign      = 'center';
-  ctx.textBaseline   = 'middle';
-  ctx.fillStyle      = '#000000';
-
-  for (let i = 0; i < _slhtActiveP; i++) {
-    const life = _slhtPL[i];
-    if (life <= 0) continue;
-
-    const px = _slhtPX[i], py = _slhtPY[i];
-    const mx = Math.max(0, Math.min(W - 1, ((px / CW) * W) | 0));
-    const my = Math.max(0, Math.min(H - 1, ((py / CH) * H) | 0));
-    const mi = my * W + mx;
-
-    const inside = _slhtMask[mi] >= 0.5;
-    const d      = _slhtDist[mi];
-
-    let alpha = life;
-    if (inside) {
-      if (d > contourBand) {
-        // Interior: visibility scales with fill amount
-        alpha *= 0.25 + 0.75 * fillN;
-      }
-      // Contour band: full opacity (alpha = life)
-    } else {
-      if (d < haloMax) {
-        // Halo: fade with distance
-        alpha *= 0.15 + 0.70 * (1.0 - d / haloMax);
-      } else {
-        continue; // too far outside, invisible
-      }
-    }
-    if (alpha < 0.04) continue;
-
-    // Render: use setTransform to avoid save/restore overhead
-    ctx.globalAlpha = alpha > 1 ? 1 : alpha;
-    ctx.setTransform(_slhtPC[i], _slhtPS[i], -_slhtPS[i], _slhtPC[i], px, py);
-    ctx.fillText(SLHT_GLYPHS[_slhtPG[i]], 0, 0);
-  }
-
-  // Reset transform + alpha
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1.0;
+  _slhtRenderGlyphPhase(ctx, CW, CH);
 }
 
 // ── SLHT reset (called when switching away from SLHT family) ──────
@@ -11688,6 +11829,18 @@ function _getTypoGlyph(brightness, glyphs, invertMap) {
   return glyphs[idx];
 }
 
+let _asciiGrayPool = new Float32Array(0);
+let _asciiTmpPool = new Float32Array(0);
+let _asciiFloatPoolAllocs = 0;
+function _ensureAsciiFloatPools(length) {
+  if (_asciiGrayPool.length !== length) {
+    _asciiGrayPool = new Float32Array(length);
+    _asciiTmpPool = new Float32Array(length);
+    _asciiFloatPoolAllocs += 2;
+  }
+  return { gray: _asciiGrayPool, tmp: _asciiTmpPool };
+}
+
 function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
   if (!_typoReady || !_typoPretext) {
     _renderASCIISync(px, SW, SH, colsOverride, forUpload);
@@ -11708,7 +11861,7 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
   const stickerCache = interactiveTypo ? _getStickerRenderCache() : [];
   const hasObstaclePass = interactiveTypo && (stickerCache.length > 0 || (touchReflowState.active && !touchReflowState.onSticker));
 
-  const gray = new Float32Array(SW * SH);
+  const { gray, tmp } = _ensureAsciiFloatPools(SW * SH);
   for (let i = 0; i < SW * SH; i++) {
     const p = i << 2;
     gray[i] = asciiPixelLum(px[p], px[p + 1], px[p + 2]);
@@ -11716,7 +11869,7 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
 
   if (acSharpOn && acSharpVal > 0) {
     const sharpN = acSharpVal * 0.022;
-    const tmp = new Float32Array(gray);
+    tmp.set(gray);
     for (let y = 1; y < SH - 1; y++) {
       for (let x = 1; x < SW - 1; x++) {
         const i = y * SW + x;
@@ -11728,7 +11881,7 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
 
   if (acEdgeOn && acEdgeVal > 0) {
     const edgeMix = acEdgeVal / 7;
-    const tmp = new Float32Array(gray);
+    tmp.set(gray);
     for (let y = 1; y < SH - 1; y++) {
       for (let x = 1; x < SW - 1; x++) {
         const i = y * SW + x;
@@ -11890,8 +12043,8 @@ function renderASCII(source, srcW, srcH, mirror, forUpload) {
   // Upload preview/export needs a ready canvas in the same tick.
   // Keep worker async for live CAM preview, but render sync for UPLOAD to avoid blank/stale frames.
   if (!forUpload && asciiSubMode === 'classic' && _asciiWorker && !asciiHighPerf) {
-    const imgData = ctxAS.getImageData(0, 0, SW, SH);
-    _dispatchAsciiWorker(imgData, SW, SH, forUpload);
+    const imgData = _captureAsciiWorkerImageData(SW, SH);
+    if (imgData) _dispatchAsciiWorker(imgData, SW, SH, forUpload);
     return;
   }
 
@@ -11919,7 +12072,7 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
   // colsOverride: used by photo capture to bypass preview cap for full quality
   const _cols = colsOverride || (asciiRecordingHighQuality ? asciiCols : Math.min(asciiCols, ASCII_PREVIEW_MAX));
   // Build grayscale array with image adjustments
-  const gray = new Float32Array(SW * SH);
+  const { gray, tmp } = _ensureAsciiFloatPools(SW * SH);
   for (let i = 0; i < SW * SH; i++) {
     const p = i << 2;
     gray[i] = asciiPixelLum(px[p], px[p+1], px[p+2]);
@@ -11927,7 +12080,8 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
 
   // Sharpness
   if (acSharpOn && acSharpVal > 0) {
-    const s = acSharpVal * 0.03, tmp = new Float32Array(gray);
+    const s = acSharpVal * 0.03;
+    tmp.set(gray);
     for (let y = 1; y < SH-1; y++)
       for (let x = 1; x < SW-1; x++) {
         const i = y*SW+x;
@@ -11938,7 +12092,8 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
 
   // Edge detection
   if (acEdgeOn && acEdgeVal > 0) {
-    const ef = acEdgeVal / 5, tmp = new Float32Array(gray);
+    const ef = acEdgeVal / 5;
+    tmp.set(gray);
     for (let y = 1; y < SH-1; y++)
       for (let x = 1; x < SW-1; x++) {
         const i = y*SW+x;
@@ -12066,6 +12221,353 @@ function _asciiWorkerBody() {
     ['# ok','# todo','# n','# i','# fix','# init','# loop'],
   ];
   let _osc = null;
+  let _grayPool = new Float32Array(0);
+  let _tmpPool = new Float32Array(0);
+  const _atlasCache = new Map();
+  const ATLAS_CACHE_BUDGET = 32 * 1024 * 1024;
+  let _atlasCacheBytes = 0;
+  let _gridLayoutCache = null;
+  let _glyphGL = null;
+  let _glyphGLDisabled = false;
+  let _glyphGLWarned = false;
+  let _glyphGLVertices = new Float32Array(0);
+
+  function warnGlyphGL(message, error) {
+    _glyphGLDisabled = true;
+    _glyphGL = null;
+    if (!_glyphGLWarned) {
+      console.warn(message, error || '');
+      _glyphGLWarned = true;
+    }
+  }
+
+  function evictGlyphAtlas(key, atlas) {
+    if (_glyphGL && atlas?.canvas) {
+      const texture = _glyphGL.textures.get(atlas.canvas);
+      if (texture && !_glyphGL.gl.isContextLost()) _glyphGL.gl.deleteTexture(texture);
+      _glyphGL.textures.delete(atlas.canvas);
+    }
+    atlas?.canvas?.close?.();
+    _atlasCache.delete(key);
+    _atlasCacheBytes = Math.max(0, _atlasCacheBytes - (atlas?.bytes || 0));
+  }
+
+  function ensureFloatPools(length) {
+    if (_grayPool.length !== length) {
+      _grayPool = new Float32Array(length);
+      _tmpPool = new Float32Array(length);
+    }
+    return { gray:_grayPool, tmp:_tmpPool };
+  }
+
+  function getGlyphAtlas(ctx, font, color, glyphSource, phaseAccurate = true) {
+    const glyphs = [...new Set(glyphSource)];
+    const fontMatch = /(\d+(?:\.\d+)?)px/.exec(font);
+    const fontSize = fontMatch ? Number(fontMatch[1]) : 10;
+    const phaseSteps = !phaseAccurate ? 1 : (fontSize <= 6 ? 20 : (fontSize <= 12 ? 10 : (fontSize <= 24 ? 5 : 2)));
+    const key = `${font}\u0000${color}\u0000${phaseSteps}\u0000${glyphs.join('\u0001')}`;
+    const cached = _atlasCache.get(key);
+    if (cached) {
+      _atlasCache.delete(key);
+      _atlasCache.set(key, cached);
+      return cached;
+    }
+
+    ctx.font = font;
+    ctx.textBaseline = 'top';
+    let maxWidth = 1;
+    for (const glyph of glyphs) maxWidth = Math.max(maxWidth, ctx.measureText(glyph).width);
+    const pad = Math.max(2, Math.ceil(fontSize * 0.35));
+    const tileW = Math.max(8, Math.ceil(maxWidth) + pad * 2);
+    const tileH = Math.max(8, Math.ceil(fontSize * 1.8) + pad * 2);
+    const variantCount = glyphs.length * phaseSteps * phaseSteps;
+    const sheetLimit = 4096;
+    const idealColumns = Math.ceil(Math.sqrt(variantCount * tileH / tileW));
+    const columns = Math.min(
+      variantCount,
+      Math.max(1, Math.min(Math.floor(sheetLimit / tileW), idealColumns))
+    );
+    const rows = Math.ceil(variantCount / columns);
+    const canvas = new OffscreenCanvas(tileW * columns, tileH * rows);
+    const atlasCtx = canvas.getContext('2d');
+    atlasCtx.font = font;
+    atlasCtx.textBaseline = 'top';
+    atlasCtx.fillStyle = color;
+    const entries = new Map();
+    const sourceX = new Uint32Array(variantCount);
+    const sourceY = new Uint32Array(variantCount);
+    for (let glyphIndex = 0; glyphIndex < glyphs.length; glyphIndex++) {
+      entries.set(glyphs[glyphIndex], glyphIndex);
+      for (let phaseY = 0; phaseY < phaseSteps; phaseY++) {
+        for (let phaseX = 0; phaseX < phaseSteps; phaseX++) {
+          const index = (glyphIndex * phaseSteps + phaseY) * phaseSteps + phaseX;
+          const sx = (index % columns) * tileW;
+          const sy = Math.floor(index / columns) * tileH;
+          sourceX[index] = sx;
+          sourceY[index] = sy;
+          atlasCtx.fillText(
+            glyphs[glyphIndex],
+            sx + pad + phaseX / phaseSteps,
+            sy + pad + phaseY / phaseSteps
+          );
+        }
+      }
+    }
+    const atlas = {
+      canvas:canvas.transferToImageBitmap(),
+      entries,
+      sourceX,
+      sourceY,
+      tileW,
+      tileH,
+      pad,
+      phaseSteps,
+      phaseArea:phaseSteps * phaseSteps,
+      columns,
+      bytes:canvas.width * canvas.height * 4,
+    };
+    if (atlas.bytes <= ATLAS_CACHE_BUDGET) {
+      while (_atlasCache.size && _atlasCacheBytes + atlas.bytes > ATLAS_CACHE_BUDGET) {
+        const oldestKey = _atlasCache.keys().next().value;
+        evictGlyphAtlas(oldestKey, _atlasCache.get(oldestKey));
+      }
+      _atlasCache.set(key, atlas);
+      _atlasCacheBytes += atlas.bytes;
+    } else {
+      atlas.transient = true;
+    }
+    return atlas;
+  }
+
+  function releaseTransientGlyphAtlas(atlas) {
+    if (!atlas?.transient) return;
+    if (_glyphGL) {
+      const texture = _glyphGL.textures.get(atlas.canvas);
+      if (texture && !_glyphGL.gl.isContextLost()) _glyphGL.gl.deleteTexture(texture);
+      _glyphGL.textures.delete(atlas.canvas);
+    }
+    atlas.canvas.close?.();
+  }
+
+  function drawAtlasGlyph(ctx, atlas, glyph, x, y) {
+    const glyphIndex = atlas.entries.get(glyph);
+    if (glyphIndex === undefined) return;
+    let dx = Math.floor(x);
+    let dy = Math.floor(y);
+    let phaseX = Math.round((x - dx) * atlas.phaseSteps);
+    let phaseY = Math.round((y - dy) * atlas.phaseSteps);
+    if (phaseX === atlas.phaseSteps) { dx++; phaseX = 0; }
+    if (phaseY === atlas.phaseSteps) { dy++; phaseY = 0; }
+    const index = (glyphIndex * atlas.phaseSteps + phaseY) * atlas.phaseSteps + phaseX;
+    const sx = (index % atlas.columns) * atlas.tileW;
+    const sy = Math.floor(index / atlas.columns) * atlas.tileH;
+    ctx.drawImage(
+      atlas.canvas,
+      sx, sy, atlas.tileW, atlas.tileH,
+      dx - atlas.pad, dy - atlas.pad, atlas.tileW, atlas.tileH
+    );
+  }
+
+  function getGridLayout(sw, sh, cols, rows, sCW, sCH, cW, cH, frame, phaseSteps) {
+    const key = `${sw}:${sh}:${cols}:${rows}:${cW}:${cH}:${frame}:${phaseSteps}`;
+    if (_gridLayoutCache && _gridLayoutCache.key === key) return _gridLayoutCache;
+    const x0 = new Uint16Array(cols);
+    const x1 = new Uint16Array(cols);
+    const dx = new Int32Array(cols);
+    const phaseX = new Uint8Array(cols);
+    const y0 = new Uint16Array(rows);
+    const y1 = new Uint16Array(rows);
+    const dy = new Int32Array(rows);
+    const phaseY = new Uint8Array(rows);
+    for (let c = 0; c < cols; c++) {
+      x0[c] = Math.floor(c * sCW);
+      x1[c] = Math.min(Math.ceil((c + 1) * sCW), sw);
+      const x = frame + c * cW;
+      dx[c] = Math.floor(x);
+      phaseX[c] = Math.round((x - dx[c]) * phaseSteps);
+      if (phaseX[c] === phaseSteps) { dx[c]++; phaseX[c] = 0; }
+    }
+    for (let r = 0; r < rows; r++) {
+      y0[r] = Math.floor(r * sCH);
+      y1[r] = Math.min(Math.ceil((r + 1) * sCH), sh);
+      const y = frame + r * cH;
+      dy[r] = Math.floor(y);
+      phaseY[r] = Math.round((y - dy[r]) * phaseSteps);
+      if (phaseY[r] === phaseSteps) { dy[r]++; phaseY[r] = 0; }
+    }
+    _gridLayoutCache = { key, x0, x1, dx, phaseX, y0, y1, dy, phaseY };
+    return _gridLayoutCache;
+  }
+
+  function createGlyphShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const message = gl.getShaderInfoLog(shader) || 'glyph shader compile failed';
+      gl.deleteShader(shader);
+      throw new Error(message);
+    }
+    return shader;
+  }
+
+  function ensureGlyphGL(outW, outH) {
+    if (_glyphGLDisabled) return null;
+    if (_glyphGL?.gl?.isContextLost()) {
+      warnGlyphGL('ASCII atlas WebGL context lost, using 2D fallback.');
+      return null;
+    }
+    if (!_glyphGL) {
+      const canvas = new OffscreenCanvas(outW, outH);
+      const gl = canvas.getContext('webgl', {
+        alpha:true,
+        antialias:false,
+        depth:false,
+        stencil:false,
+        premultipliedAlpha:false,
+        preserveDrawingBuffer:false,
+      });
+      if (!gl) return null;
+      try {
+        const vertex = createGlyphShader(gl, gl.VERTEX_SHADER, `
+          attribute vec2 a_position;
+          attribute vec2 a_uv;
+          uniform vec2 u_resolution;
+          varying vec2 v_uv;
+          void main() {
+            vec2 clip = vec2(
+              a_position.x / u_resolution.x * 2.0 - 1.0,
+              1.0 - a_position.y / u_resolution.y * 2.0
+            );
+            gl_Position = vec4(clip, 0.0, 1.0);
+            v_uv = a_uv;
+          }
+        `);
+        const fragment = createGlyphShader(gl, gl.FRAGMENT_SHADER, `
+          precision mediump float;
+          uniform sampler2D u_atlas;
+          varying vec2 v_uv;
+          void main() {
+            gl_FragColor = texture2D(u_atlas, v_uv);
+          }
+        `);
+        const program = gl.createProgram();
+        gl.attachShader(program, vertex);
+        gl.attachShader(program, fragment);
+        gl.linkProgram(program);
+        gl.deleteShader(vertex);
+        gl.deleteShader(fragment);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program) || 'glyph program link failed');
+        }
+        const buffer = gl.createBuffer();
+        _glyphGL = {
+          canvas,
+          gl,
+          program,
+          buffer,
+          position:gl.getAttribLocation(program, 'a_position'),
+          uv:gl.getAttribLocation(program, 'a_uv'),
+          resolution:gl.getUniformLocation(program, 'u_resolution'),
+          atlasUniform:gl.getUniformLocation(program, 'u_atlas'),
+          maxTextureSize:gl.getParameter(gl.MAX_TEXTURE_SIZE),
+          textures:new WeakMap(),
+        };
+      } catch (error) {
+        warnGlyphGL('ASCII atlas WebGL init failed, using 2D fallback.', error);
+        return null;
+      }
+    }
+    if (_glyphGL.canvas.width !== outW || _glyphGL.canvas.height !== outH) {
+      _glyphGL.canvas.width = outW;
+      _glyphGL.canvas.height = outH;
+    }
+    return _glyphGL;
+  }
+
+  function ensureGlyphVertexCapacity(floatLength) {
+    if (_glyphGLVertices.length >= floatLength) return _glyphGLVertices;
+    let length = Math.max(1024, _glyphGLVertices.length || 1024);
+    while (length < floatLength) length *= 2;
+    _glyphGLVertices = new Float32Array(length);
+    return _glyphGLVertices;
+  }
+
+  function appendGlyphQuad(vertices, offset, x0, y0, x1, y1, u0, v0, u1, v1) {
+    vertices[offset++] = x0; vertices[offset++] = y0; vertices[offset++] = u0; vertices[offset++] = v0;
+    vertices[offset++] = x1; vertices[offset++] = y0; vertices[offset++] = u1; vertices[offset++] = v0;
+    vertices[offset++] = x0; vertices[offset++] = y1; vertices[offset++] = u0; vertices[offset++] = v1;
+    vertices[offset++] = x0; vertices[offset++] = y1; vertices[offset++] = u0; vertices[offset++] = v1;
+    vertices[offset++] = x1; vertices[offset++] = y0; vertices[offset++] = u1; vertices[offset++] = v0;
+    vertices[offset++] = x1; vertices[offset++] = y1; vertices[offset++] = u1; vertices[offset++] = v1;
+    return offset;
+  }
+
+  function renderGlyphBatch(state, atlas, floatCount, paper, outW, outH) {
+    const gl = state.gl;
+    if (gl.isContextLost()) throw new Error('WebGL context lost');
+    let texture = state.textures.get(atlas.canvas);
+    if (!texture) {
+      texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas.canvas);
+      state.textures.set(atlas.canvas, texture);
+    } else {
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+    }
+    gl.viewport(0, 0, outW, outH);
+    gl.clearColor(paper[0] / 255, paper[1] / 255, paper[2] / 255, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(state.program);
+    gl.uniform2f(state.resolution, outW, outH);
+    gl.uniform1i(state.atlasUniform, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, state.buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, _glyphGLVertices.subarray(0, floatCount), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(state.position);
+    gl.vertexAttribPointer(state.position, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(state.uv);
+    gl.vertexAttribPointer(state.uv, 2, gl.FLOAT, false, 16, 8);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, 0, floatCount / 4);
+    return state.canvas.transferToImageBitmap();
+  }
+
+  function renderGlyphBatch2D(ctx, atlas, vertices, floatCount) {
+    for (let offset = 0; offset < floatCount; offset += 24) {
+      const x0 = vertices[offset];
+      const y0 = vertices[offset + 1];
+      const u0 = vertices[offset + 2];
+      const v0 = vertices[offset + 3];
+      ctx.drawImage(
+        atlas.canvas,
+        Math.round(u0 * atlas.canvas.width),
+        Math.round(v0 * atlas.canvas.height),
+        atlas.tileW,
+        atlas.tileH,
+        x0,
+        y0,
+        atlas.tileW,
+        atlas.tileH
+      );
+    }
+  }
+
+  function finishGlyphFrame(state, ctx, atlas, vertices, floatCount, paper, outW, outH) {
+    try {
+      return renderGlyphBatch(state, atlas, floatCount, paper, outW, outH);
+    } catch (error) {
+      renderGlyphBatch2D(ctx, atlas, vertices, floatCount);
+      warnGlyphGL('ASCII atlas WebGL runtime failed, using 2D fallback.', error);
+      return _osc.transferToImageBitmap();
+    }
+  }
 
   function pixLum(r, g, b, s) {
     if (s.bright !== 100) { const f=s.bright/100; r=Math.min(255,r*f); g=Math.min(255,g*f); b=Math.min(255,b*f); }
@@ -12086,16 +12588,19 @@ function _asciiWorkerBody() {
 
   self.onmessage = function(e) {
     if (e.data.type !== 'render') return;
+    const renderStart = performance.now();
     const {buf, sw, sh, s} = e.data;
     const px = new Uint8ClampedArray(buf);
-    const gray = new Float32Array(sw * sh);
+    const { gray, tmp } = ensureFloatPools(sw * sh);
     for (let i = 0; i < sw * sh; i++) { const p=i<<2; gray[i]=pixLum(px[p],px[p+1],px[p+2],s); }
     if (s.sharpOn && s.sharp > 0) {
-      const sf=s.sharp*0.03, tmp=new Float32Array(gray);
+      const sf=s.sharp*0.03;
+      tmp.set(gray);
       for (let y=1;y<sh-1;y++) for (let x=1;x<sw-1;x++) { const i=y*sw+x; gray[i]=Math.max(0,Math.min(255,tmp[i]+sf*(tmp[i]*4-tmp[i-1]-tmp[i+1]-tmp[i-sw]-tmp[i+sw]))); }
     }
     if (s.edgeOn && s.edge > 0) {
-      const ef=s.edge/5, tmp=new Float32Array(gray);
+      const ef=s.edge/5;
+      tmp.set(gray);
       for (let y=1;y<sh-1;y++) for (let x=1;x<sw-1;x++) {
         const i=y*sw+x;
         const gx=-tmp[(y-1)*sw+(x-1)]-2*tmp[y*sw+(x-1)]-tmp[(y+1)*sw+(x-1)]+tmp[(y-1)*sw+(x+1)]+2*tmp[y*sw+(x+1)]+tmp[(y+1)*sw+(x+1)];
@@ -12115,15 +12620,33 @@ function _asciiWorkerBody() {
     ctx.fillStyle=s.pyMode!=='off'?PYPAL[s.pyPal].bg:`rgb(${s.palPaper})`;
     ctx.fillRect(0,0,s.outW,s.outH);
     const fontSize=Math.max(4,Math.floor(cH*0.92));
-    ctx.font=`bold ${fontSize}px ${s.font||'monospace'}`; ctx.textBaseline='top';
+    const font=`bold ${fontSize}px ${s.font||'monospace'}`;
+    ctx.font=font; ctx.textBaseline='top';
+    const useAtlas=s.useAtlas!==false&&s.pyMode==='off';
+    const normalColor=`rgb(${s.palInk})`;
+    const normalAtlas=useAtlas?getGlyphAtlas(ctx,font,normalColor,grad):null;
+    const layout=normalAtlas
+      ? getGridLayout(sw,sh,cols,rows,sCW,sCH,cW,cH,s.frame,normalAtlas.phaseSteps)
+      : null;
+    const glyphGLCandidate=normalAtlas&&s.useGpuAtlas!==false?ensureGlyphGL(s.outW,s.outH):null;
+    const glyphGLState=glyphGLCandidate&&
+      normalAtlas.canvas.width<=glyphGLCandidate.maxTextureSize&&
+      normalAtlas.canvas.height<=glyphGLCandidate.maxTextureSize
+      ? glyphGLCandidate
+      : null;
+    let glyphVertexOffset=0;
+    const glyphVertices=glyphGLState?ensureGlyphVertexCapacity(cols*rows*24):null;
     const chaosN=s.chaos/100;
     const lines=[];
+    const gridStart=performance.now();
     for (let r=0;r<rows;r++) {
       let line='';
       for (let c=0;c<cols;c++) {
         let gSum=0, cnt=0;
-        const x0=Math.floor(c*sCW), x1=Math.min(Math.ceil((c+1)*sCW),sw);
-        const y0=Math.floor(r*sCH), y1=Math.min(Math.ceil((r+1)*sCH),sh);
+        const x0=layout?layout.x0[c]:Math.floor(c*sCW);
+        const x1=layout?layout.x1[c]:Math.min(Math.ceil((c+1)*sCW),sw);
+        const y0=layout?layout.y0[r]:Math.floor(r*sCH);
+        const y1=layout?layout.y1[r]:Math.min(Math.ceil((r+1)*sCH),sh);
         for (let py=y0;py<y1;py++) for (let pxx=x0;pxx<x1;pxx++) gSum+=gray[py*sw+pxx],cnt++;
         const raw=cnt?gSum/cnt:128;
         let lum;
@@ -12139,8 +12662,9 @@ function _asciiWorkerBody() {
             const roleRaw=(1-lumN)*(1-chaosN)+Math.random()*chaosN;
             const role=Math.min(5,Math.floor(roleRaw*6));
             const col=PYPAL[s.pyPal].code[role];
+            const token=PYBANK[role][(Math.random()*PYBANK[role].length)|0];
             ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
-            ctx.fillText(PYBANK[role][(Math.random()*PYBANK[role].length)|0],s.frame+c*cW,s.frame+r*cH);
+            ctx.fillText(token,s.frame+c*cW,s.frame+r*cH);
           } else if (s.pyMode==='chars') {
             const pyCols=PYPAL[s.pyPal].chars;
             const colIdx=Math.min(pyCols.length-1,Math.floor((lumN*(1-chaosN)+Math.random()*chaosN)*pyCols.length));
@@ -12148,21 +12672,238 @@ function _asciiWorkerBody() {
             ctx.fillStyle=`rgb(${col[0]},${col[1]},${col[2]})`;
             ctx.fillText(ch,s.frame+c*cW,s.frame+r*cH);
           } else {
-            ctx.fillStyle=`rgb(${s.palInk})`;
-            ctx.fillText(ch,s.frame+c*cW,s.frame+r*cH);
+            if (normalAtlas) {
+              const glyphIndex=normalAtlas.entries.get(ch);
+              const index=glyphIndex*normalAtlas.phaseArea+
+                layout.phaseY[r]*normalAtlas.phaseSteps+layout.phaseX[c];
+              const sourceX=normalAtlas.sourceX[index];
+              const sourceY=normalAtlas.sourceY[index];
+              const destX=layout.dx[c]-normalAtlas.pad;
+              const destY=layout.dy[r]-normalAtlas.pad;
+              if (glyphGLState) {
+                glyphVertexOffset=appendGlyphQuad(
+                  glyphVertices,glyphVertexOffset,
+                  destX,destY,destX+normalAtlas.tileW,destY+normalAtlas.tileH,
+                  sourceX/normalAtlas.canvas.width,
+                  sourceY/normalAtlas.canvas.height,
+                  (sourceX+normalAtlas.tileW)/normalAtlas.canvas.width,
+                  (sourceY+normalAtlas.tileH)/normalAtlas.canvas.height
+                );
+              } else {
+                ctx.drawImage(
+                  normalAtlas.canvas,
+                  sourceX,sourceY,normalAtlas.tileW,normalAtlas.tileH,
+                  destX,destY,normalAtlas.tileW,normalAtlas.tileH
+                );
+              }
+            } else {
+              ctx.fillStyle=normalColor;
+              ctx.fillText(ch,s.frame+c*cW,s.frame+r*cH);
+            }
           }
         }
       }
       lines.push(line);
     }
-    const bitmap=_osc.transferToImageBitmap();
-    self.postMessage({type:'frame',bitmap,text:lines.join('\n')},[bitmap]);
+    const gridEnd=performance.now();
+    const paperRGB=Array.isArray(s.palPaper)
+      ? s.palPaper
+      : String(s.palPaper).split(',').map(Number);
+    const bitmap=glyphGLState
+      ? finishGlyphFrame(glyphGLState,ctx,normalAtlas,glyphVertices,glyphVertexOffset,paperRGB,s.outW,s.outH)
+      : _osc.transferToImageBitmap();
+    releaseTransientGlyphAtlas(normalAtlas);
+    const renderMs=performance.now()-renderStart;
+    self.postMessage({
+      type:'frame',
+      bitmap,
+      text:lines.join('\n'),
+      buf,
+      sw,
+      sh,
+      asciiSubMode:e.data.asciiSubMode,
+      OUT_W:e.data.OUT_W,
+      OUT_H:e.data.OUT_H,
+      renderMs,
+      prepMs:gridStart-renderStart,
+      gridMs:gridEnd-gridStart,
+      bitmapMs:renderMs-(gridEnd-renderStart),
+    },[bitmap,buf]);
   };
 }
 
 let _asciiWorker      = null;
 let _asciiWorkerBusy  = false;
 let _asciiWorkerPend  = null;   // {imgData, sw, sh} — latest pending frame
+let _asciiAtlasEnabled = true;
+let _asciiWorkerImagePool = [];
+let _asciiWorkerPoolDims = '';
+const _asciiReadbackEngine = (() => {
+  let state = null;
+
+  function compile(gl, type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  }
+
+  function init(width, height) {
+    if (state?.gl?.isContextLost?.()) state = null;
+    if (!state) {
+      const canvas = typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(width, height)
+        : document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const gl = canvas.getContext('webgl', {
+        alpha:true,
+        antialias:false,
+        depth:false,
+        stencil:false,
+        premultipliedAlpha:false,
+        preserveDrawingBuffer:false,
+      });
+      if (!gl) return null;
+      const vertex = compile(gl, gl.VERTEX_SHADER, `
+        attribute vec2 a_position;
+        attribute vec2 a_uv;
+        varying vec2 v_uv;
+        void main() {
+          gl_Position = vec4(a_position, 0.0, 1.0);
+          v_uv = a_uv;
+        }
+      `);
+      const fragment = compile(gl, gl.FRAGMENT_SHADER, `
+        precision mediump float;
+        uniform sampler2D u_source;
+        varying vec2 v_uv;
+        void main() {
+          gl_FragColor = texture2D(u_source, v_uv);
+        }
+      `);
+      if (!vertex || !fragment) return null;
+      const program = gl.createProgram();
+      gl.attachShader(program, vertex);
+      gl.attachShader(program, fragment);
+      gl.linkProgram(program);
+      gl.deleteShader(vertex);
+      gl.deleteShader(fragment);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return null;
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      // readPixels returns the framebuffer bottom row first. Map that row to
+      // source top so the pooled ImageData is top-down.
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1,-1, 0,1,   1,-1, 1,1,  -1, 1, 0,0,
+        -1, 1, 0,0,   1,-1, 1,1,   1, 1, 1,0,
+      ]), gl.STATIC_DRAW);
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      state = {
+        canvas,
+        gl,
+        program,
+        buffer,
+        texture,
+        position:gl.getAttribLocation(program, 'a_position'),
+        uv:gl.getAttribLocation(program, 'a_uv'),
+        source:gl.getUniformLocation(program, 'u_source'),
+      };
+    }
+    if (state.canvas.width !== width || state.canvas.height !== height) {
+      state.canvas.width = width;
+      state.canvas.height = height;
+    }
+    return state;
+  }
+
+  function read(sourceCanvas, target, width, height) {
+    const engine = init(width, height);
+    if (!engine) return false;
+    const { gl } = engine;
+    try {
+      gl.viewport(0, 0, width, height);
+      gl.useProgram(engine.program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, engine.buffer);
+      gl.enableVertexAttribArray(engine.position);
+      gl.vertexAttribPointer(engine.position, 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(engine.uv);
+      gl.vertexAttribPointer(engine.uv, 2, gl.FLOAT, false, 16, 8);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, engine.texture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+      gl.uniform1i(engine.source, 0);
+      gl.disable(gl.BLEND);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, target);
+      return gl.getError() === gl.NO_ERROR;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  return { read };
+})();
+const _asciiWorkerStats = {
+  acceptedFrames: 0,
+  discardedFrames: 0,
+  returnedBuffers: 0,
+  poolCreated: 0,
+  poolMisses: 0,
+  copiedFrames: 0,
+  gpuReadbacks: 0,
+  fallbackReadbacks: 0,
+  lastRenderMs: 0,
+};
+
+function _ensureAsciiWorkerImagePool(sw, sh) {
+  const dims = `${sw}x${sh}`;
+  if (_asciiWorkerPoolDims === dims) return;
+  _asciiWorkerPoolDims = dims;
+  _asciiWorkerImagePool = [
+    ctxAS.createImageData(sw, sh),
+    ctxAS.createImageData(sw, sh),
+  ];
+  _asciiWorkerStats.poolCreated += 2;
+}
+
+function _releaseAsciiWorkerImageData(imgData, sw, sh) {
+  if (!imgData || imgData.data.byteLength !== sw * sh * 4) return;
+  _ensureAsciiWorkerImagePool(sw, sh);
+  if (_asciiWorkerImagePool.length < 2) _asciiWorkerImagePool.push(imgData);
+}
+
+function _captureAsciiWorkerImageData(sw, sh) {
+  _ensureAsciiWorkerImagePool(sw, sh);
+  let pooled = _asciiWorkerImagePool.pop();
+  if (!pooled && _asciiWorkerPend && _asciiWorkerPend.sw === sw && _asciiWorkerPend.sh === sh) {
+    pooled = _asciiWorkerPend.imgData;
+  }
+  if (!pooled || pooled.data.byteLength !== sw * sh * 4) {
+    _asciiWorkerStats.poolMisses++;
+    return null;
+  }
+  if (_asciiReadbackEngine.read(ctxAS.canvas, pooled.data, sw, sh)) {
+    _asciiWorkerStats.gpuReadbacks++;
+  } else {
+    pooled.data.set(ctxAS.getImageData(0, 0, sw, sh).data);
+    _asciiWorkerStats.fallbackReadbacks++;
+  }
+  _asciiWorkerStats.copiedFrames++;
+  return pooled;
+}
 
 function _initAsciiWorker() {
   if (typeof OffscreenCanvas === 'undefined') return;
@@ -12172,25 +12913,53 @@ function _initAsciiWorker() {
     _asciiWorker = new Worker(URL.createObjectURL(blob));
     _asciiWorker.onmessage = e => {
       if (e.data.type !== 'frame') return;
-      ctxAscii.drawImage(e.data.bitmap, 0, 0);
+      if (e.data.buf instanceof ArrayBuffer && e.data.sw > 0 && e.data.sh > 0) {
+        try {
+          _releaseAsciiWorkerImageData(
+            new ImageData(new Uint8ClampedArray(e.data.buf), e.data.sw, e.data.sh),
+            e.data.sw,
+            e.data.sh
+          );
+          _asciiWorkerStats.returnedBuffers++;
+        } catch (_) {}
+      }
+      const frameMatches = e.data.asciiSubMode === asciiSubMode &&
+        e.data.OUT_W === OUT_W && e.data.OUT_H === OUT_H;
+      if (frameMatches) {
+        ctxAscii.drawImage(e.data.bitmap, 0, 0);
+        if (typeof e.data.text === 'string') lastAsciiText = e.data.text;
+        _asciiWorkerStats.acceptedFrames++;
+      } else {
+        _asciiWorkerStats.discardedFrames++;
+      }
       e.data.bitmap.close();
-      if (typeof e.data.text === 'string') lastAsciiText = e.data.text;
+      if (Number.isFinite(e.data.renderMs)) _asciiWorkerStats.lastRenderMs = e.data.renderMs;
       _asciiWorkerBusy = false;
       if (_asciiWorkerPend) {
         const p = _asciiWorkerPend; _asciiWorkerPend = null;
-        _dispatchAsciiWorker(p.imgData, p.sw, p.sh);
+        if (p.asciiSubMode === asciiSubMode && p.OUT_W === OUT_W &&
+            p.OUT_H === OUT_H && asciiSubMode === 'classic') {
+          _dispatchAsciiWorker(p.imgData, p.sw, p.sh, p.forUpload);
+        } else {
+          _releaseAsciiWorkerImageData(p.imgData, p.sw, p.sh);
+        }
       }
     };
     _asciiWorker.onerror = err => {
       console.error('ASCII worker failed', err?.message || err);
       _asciiWorkerBusy = false;
       _asciiWorkerPend = null;
+      _asciiWorkerImagePool = [];
+      _asciiWorkerPoolDims = '';
       _asciiWorker = null;
     };
   } catch(_) { _asciiWorker = null; }
 }
 
 function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
+  const frameMode = asciiSubMode;
+  const frameOutW = OUT_W;
+  const frameOutH = OUT_H;
   const acColors = _getAsciiClassicColors(forUpload || false);
   const s = {
     // Recording bypasses the preview cap so exported video keeps the chosen density
@@ -12203,12 +12972,28 @@ function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
     edgeOn: acEdgeOn, edge: acEdgeVal,
     gradient: acGradientVal, space: acSpaceVal, frame: acFrameVal,
     pyMode: pySubMode, pyPal: pyPalIdx, chaos: chaosVal,
-    outW: OUT_W, outH: OUT_H,
+    outW: frameOutW, outH: frameOutH,
     palInk: acColors.ink, palPaper: acColors.paper, invertMap: acColors.invertMap,
+    useAtlas: _asciiAtlasEnabled,
   };
-  if (_asciiWorkerBusy) { _asciiWorkerPend = {imgData, sw, sh}; return; }
+  if (_asciiWorkerBusy) {
+    _asciiWorkerPend = {
+      imgData, sw, sh, forUpload,
+      asciiSubMode:frameMode, OUT_W:frameOutW, OUT_H:frameOutH,
+    };
+    return;
+  }
   _asciiWorkerBusy = true;
-  _asciiWorker.postMessage({type:'render', buf: imgData.data.buffer, sw, sh, s}, [imgData.data.buffer]);
+  _asciiWorker.postMessage({
+    type:'render',
+    buf:imgData.data.buffer,
+    sw,
+    sh,
+    s,
+    asciiSubMode:frameMode,
+    OUT_W:frameOutW,
+    OUT_H:frameOutH,
+  }, [imgData.data.buffer]);
 }
 
 // ════════════════════════════════════════════════════════════════════
