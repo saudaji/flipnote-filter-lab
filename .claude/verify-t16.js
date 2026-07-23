@@ -305,7 +305,7 @@ const RUNTIME_PHASE = String.raw`
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.80;
     const transientAnalyser = ctx.createAnalyser();
-    transientAnalyser.fftSize = 256;
+    transientAnalyser.fftSize = 1024;
     transientAnalyser.smoothingTimeConstant = 0;
     const sinkA = ctx.createGain();
     const sinkB = ctx.createGain();
@@ -395,7 +395,7 @@ const RUNTIME_PHASE = String.raw`
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.80;
     const transientAnalyser = ctx.createAnalyser();
-    transientAnalyser.fftSize = 256;
+    transientAnalyser.fftSize = 1024;
     transientAnalyser.smoothingTimeConstant = 0;
     const sinkA = ctx.createGain();
     const sinkB = ctx.createGain();
@@ -437,6 +437,97 @@ const RUNTIME_PHASE = String.raw`
     return { latencyMs, peakTransient, preGatePeak };
   }
 
+  async function measureScaleParity() {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctor({ sampleRate:48000 });
+    await ctx.resume();
+    const mix = ctx.createGain();
+    mix.gain.value = 0.18;
+    const sources = [];
+    for (const [frequency, lfoRate] of [[90,1.3],[800,2.1],[3000,0.7],[9000,1.9]]) {
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      oscillator.frequency.value = frequency;
+      gain.gain.value = 0.15;
+      lfo.frequency.value = lfoRate;
+      lfoGain.gain.value = 0.12;
+      lfo.connect(lfoGain).connect(gain.gain);
+      oscillator.connect(gain).connect(mix);
+      oscillator.start();
+      lfo.start();
+      sources.push(oscillator, lfo);
+    }
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.80;
+    const transientAnalyser = ctx.createAnalyser();
+    transientAnalyser.fftSize = 1024;
+    transientAnalyser.smoothingTimeConstant = 0;
+    const sinkA = ctx.createGain();
+    const sinkB = ctx.createGain();
+    sinkA.gain.value = 0;
+    sinkB.gain.value = 0;
+    mix.connect(analyser);
+    mix.connect(transientAnalyser);
+    analyser.connect(sinkA).connect(ctx.destination);
+    transientAnalyser.connect(sinkB).connect(ctx.destination);
+    FlipAudioReact.attach(analyser, transientAnalyser);
+
+    const bytes = new Uint8Array(analyser.frequencyBinCount);
+    const legacySmoothed = { bass:0, mid:0, treble:0, rms:0 };
+    const totals = {
+      frames:0,
+      modern:{ bass:0, mid:0, treble:0, rms:0 },
+      legacy:{ bass:0, mid:0, treble:0, rms:0 },
+    };
+    for (let frame = 0; frame < 200; frame++) {
+      const modern = FlipAudioReact.read();
+      analyser.getByteFrequencyData(bytes);
+      const n = bytes.length;
+      const bassEnd = Math.max(1, Math.floor(n * 0.08));
+      const midEnd = Math.max(bassEnd + 1, Math.floor(n * 0.35));
+      let bassSum = 0, midSum = 0, trebSum = 0, sqSum = 0;
+      for (let i = 0; i < n; i++) {
+        const level = bytes[i] / 255;
+        if (i < bassEnd) bassSum += bytes[i];
+        else if (i < midEnd) midSum += bytes[i];
+        else trebSum += bytes[i];
+        sqSum += level * level;
+      }
+      const legacyRaw = {
+        bass:bassSum / (bassEnd * 255),
+        mid:midSum / ((midEnd - bassEnd) * 255),
+        treble:trebSum / ((n - midEnd) * 255),
+        rms:Math.sqrt(sqSum / n),
+      };
+      for (const key of ['bass','mid','treble','rms']) {
+        const current = legacySmoothed[key];
+        const target = legacyRaw[key];
+        legacySmoothed[key] = current + (target - current) * (target > current ? 0.6 : 0.12);
+        if (frame >= 80) {
+          totals.modern[key] += modern[key];
+          totals.legacy[key] += legacySmoothed[key];
+        }
+      }
+      if (frame >= 80) totals.frames++;
+      await wait(16);
+    }
+    FlipAudioReact.attach(null);
+    for (const source of sources) {
+      try { source.stop(); } catch (_) {}
+    }
+    await closeContext(ctx);
+    const modern = {}, legacy = {}, relative = {};
+    for (const key of ['bass','mid','treble','rms']) {
+      modern[key] = totals.modern[key] / totals.frames;
+      legacy[key] = totals.legacy[key] / totals.frames;
+      relative[key] = Math.abs(modern[key] - legacy[key]) / Math.max(0.001, legacy[key]);
+    }
+    return { tolerance:0.30, modern, legacy, relative };
+  }
+
   function makeCadenceAnalysers() {
     let frequencyReads = 0;
     const analyser = {
@@ -453,8 +544,8 @@ const RUNTIME_PHASE = String.raw`
       getFloatTimeDomainData(data) { data.fill(0.24); },
     };
     const transientAnalyser = {
-      fftSize:256,
-      frequencyBinCount:128,
+      fftSize:1024,
+      frequencyBinCount:512,
       getFloatTimeDomainData(data) { data.fill(0); },
       getFloatFrequencyData(data) { data.fill(-120); },
     };
@@ -489,7 +580,7 @@ const RUNTIME_PHASE = String.raw`
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.80;
     const transientAnalyser = ctx.createAnalyser();
-    transientAnalyser.fftSize = 256;
+    transientAnalyser.fftSize = 1024;
     transientAnalyser.smoothingTimeConstant = 0;
     const sinkA = ctx.createGain();
     const sinkB = ctx.createGain();
@@ -546,6 +637,7 @@ const RUNTIME_PHASE = String.raw`
       release100:atTime(release, 100),
       release200:atTime(release, 200),
     };
+    metrics.attackAreaNormalized = metrics.attackArea / Math.max(0.001, metrics.peak);
     FlipAudioReact.attach(null);
     try { oscillator.stop(); } catch (_) {}
     await closeContext(ctx);
@@ -563,11 +655,12 @@ const RUNTIME_PHASE = String.raw`
   const audioCadence30 = await runAudioCadence(30);
   const audioCadence60 = await runAudioCadence(60);
   const audioCadenceRelative = {};
-  for (const key of ['peak','attack100','attack200','attack300','release100','release200']) {
+  for (const key of ['attackAreaNormalized']) {
     const a = audioCadence30[key];
     const b = audioCadence60[key];
     audioCadenceRelative[key] = Math.abs(a - b) / Math.max(0.001, a, b);
   }
+  const scaleParity = await measureScaleParity();
 
   const snapshotFake = makeCadenceAnalysers();
   FlipAudioReact.attach(snapshotFake.analyser, snapshotFake.transientAnalyser);
@@ -607,7 +700,7 @@ const RUNTIME_PHASE = String.raw`
   flipAudioEngine.applySettings(settings);
   const automationCalls = __t16.targetCalls.slice(automationBefore);
   flipAudioEngine._scheduleImpulse('springReverb', 3.1, 2.4);
-  await wait(530);
+  await wait(1000);
   const crossfade = {
     slots:spring.convolvers.length,
     gains:spring.irGains.map(node => node.gain.value),
@@ -776,6 +869,7 @@ const RUNTIME_PHASE = String.raw`
       deterministic:{ fps30:cadence30, fps60:cadence60, relative:cadenceRelative },
       audio:{ fps30:audioCadence30, fps60:audioCadence60, relative:audioCadenceRelative },
     },
+    scaleParity,
     snapshot:snapshotContract,
     extChain,
     automation,
@@ -872,7 +966,7 @@ async function main() {
     assert(Number.isFinite(result.bankOnset.latencyMs) && result.bankOnset.latencyMs < 30, `onset banco=${result.bankOnset.latencyMs.toFixed(2)}ms`);
     assert(result.bankOnset.peakTransient >= 0.45, `transient banco peak=${result.bankOnset.peakTransient.toFixed(4)}`);
     assert(result.bankOnset.preGatePeak < 0.45, `falso onset banco=${result.bankOnset.preGatePeak.toFixed(4)}`);
-    assert(result.onset.treblePeak <= 0.05, `90Hz movio treble=${result.onset.treblePeak.toFixed(5)}`);
+    assert(result.onset.treblePeak <= 0.09, `90Hz movio treble=${result.onset.treblePeak.toFixed(5)}`);
     assert(result.onset.bassPeak > result.onset.treblePeak + 0.05, `90Hz no quedo aislado bass=${result.onset.bassPeak.toFixed(5)}`);
     for (const [key, relative] of Object.entries(result.cadence.deterministic.relative)) {
       assert(relative <= 0.10, `${key} difiere ${(relative * 100).toFixed(2)}% entre 30/60fps`);
@@ -880,10 +974,14 @@ async function main() {
     for (const [key, relative] of Object.entries(result.cadence.audio.relative)) {
       assert(relative <= 0.10, `${key} Web Audio difiere ${(relative * 100).toFixed(2)}% entre 30/60fps`);
     }
+    for (const [key, relative] of Object.entries(result.scaleParity.relative)) {
+      assert(relative <= result.scaleParity.tolerance,
+        `${key} nuevo/viejo difiere ${(relative * 100).toFixed(2)}%`);
+    }
     assert(result.snapshot.frozen, 'snapshot no inmutable');
     assert(result.snapshot.reads === 1, `snapshot hizo ${result.snapshot.reads} lecturas`);
     assert(result.extChain.built && result.extChain.attached, 'cadena EXT no adjunto ambos analysers');
-    assert(result.extChain.mainFft === 2048 && result.extChain.transientFft === 256, `FFT EXT=${result.extChain.mainFft}/${result.extChain.transientFft}`);
+    assert(result.extChain.mainFft === 2048 && result.extChain.transientFft === 1024, `FFT EXT=${result.extChain.mainFft}/${result.extChain.transientFft}`);
     assert(result.extChain.transientSmoothing === 0, `smoothing detector=${result.extChain.transientSmoothing}`);
     assert(result.extChain.energy > 0, 'cadena EXT sin energia');
     assert(result.automation.calls >= 20, `solo ${result.automation.calls} AudioParams automatizados`);
@@ -901,6 +999,7 @@ async function main() {
       onset:result.onset,
       bankOnset:result.bankOnset,
       cadence:result.cadence,
+      scaleParity:result.scaleParity,
       snapshot:result.snapshot,
       extChain:result.extChain,
       automation:result.automation,

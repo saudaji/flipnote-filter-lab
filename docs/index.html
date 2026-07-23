@@ -15548,21 +15548,23 @@ const flipAudioEngine = new FlipAudioEngine();
 window.addEventListener('beforeunload', () => { flipAudioEngine.destroy().catch(() => {}); });
 
 // FlipAudioReact — shared snapshot source. Musical bands use real Hz boundaries while a
-// dedicated, unsmoothed, short-window analyser catches onsets without delaying the visuals.
+// dedicated, unsmoothed analyser catches onsets without delaying the visuals.
 // Autonomous: no dependency on any single tab/module. attach(null) fully resets state.
 const FlipAudioReact = {
   _analyser: null, _transientAnalyser: null, _freqDb: null, _time: null,
-  _fastTime: null, _fastFreqDb: null, _fastPrevMag: null,
+  _fastTime: null, _fastFreqDb: null, _fastPrevMag: null, _fastFluxMag: null,
   _sm: { bass: 0, mid: 0, treble: 0, rms: 0 },
   _fastRmsAvg: 0, _transient: 0, _lastReadT: null,
   attach(analyser, transientAnalyser) {
     this._analyser = analyser || null;
     this._transientAnalyser = transientAnalyser || analyser || null;
+    if (transientAnalyser) this._transientAnalyser.fftSize = 1024;
     this._freqDb = analyser ? new Float32Array(analyser.frequencyBinCount) : null;
     this._time = analyser ? new Float32Array(analyser.fftSize) : null;
     this._fastTime = this._transientAnalyser ? new Float32Array(this._transientAnalyser.fftSize) : null;
     this._fastFreqDb = this._transientAnalyser ? new Float32Array(this._transientAnalyser.frequencyBinCount) : null;
     this._fastPrevMag = this._transientAnalyser ? new Float32Array(this._transientAnalyser.frequencyBinCount) : null;
+    this._fastFluxMag = this._transientAnalyser ? new Float32Array(this._transientAnalyser.frequencyBinCount) : null;
     this._sm.bass = 0; this._sm.mid = 0; this._sm.treble = 0; this._sm.rms = 0;
     this._fastRmsAvg = 0;
     this._transient = 0;
@@ -15592,17 +15594,25 @@ const FlipAudioReact = {
     const bassEnd = Math.max(1, Math.min(n, Math.floor(250 / binHz) + 1));
     const midEnd = Math.min(n, Math.max(bassEnd + 1, Math.floor(2000 / binHz) + 1));
     const trebleEnd = Math.min(n, Math.max(midEnd + 1, Math.floor(8000 / binHz) + 1));
-    let bassPower = 0, midPower = 0, trebPower = 0, timePower = 0;
-    const powerAt = i => Number.isFinite(freqDb[i]) ? Math.pow(10, freqDb[i] / 10) : 0;
-    for (let i = 0; i < bassEnd; i++) bassPower += powerAt(i);
-    for (let i = bassEnd; i < midEnd; i++) midPower += powerAt(i);
-    for (let i = midEnd; i < trebleEnd; i++) trebPower += powerAt(i);
-    for (let i = 0; i < time.length; i++) timePower += time[i] * time[i];
+    let bassSum = 0, midSum = 0, trebSum = 0, sqSum = 0;
+    const levelAt = i => Number.isFinite(freqDb[i])
+      ? Math.max(0, Math.min(1, (freqDb[i] + 100) / 70))
+      : 0;
+    for (let i = 0; i < n; i++) {
+      const level = levelAt(i);
+      if (i < bassEnd) bassSum += level;
+      else if (i < midEnd) midSum += level;
+      else if (i < trebleEnd) trebSum += level;
+      sqSum += level * level;
+    }
 
-    const bassRaw = Math.min(1, Math.sqrt(bassPower / bassEnd));
-    const midRaw  = Math.min(1, Math.sqrt(midPower / (midEnd - bassEnd)));
-    const trebRaw = Math.min(1, Math.sqrt(trebPower / (trebleEnd - midEnd)));
-    const rmsRaw  = Math.min(1, Math.sqrt(timePower / time.length));
+    // Real-Hz bands contain far fewer bins than the legacy fractional bands; keep their
+    // shape but calibrate the average back to the amplitude expected by existing consumers.
+    const bandScale = 0.32;
+    const bassRaw = Math.min(1, bandScale * bassSum / bassEnd);
+    const midRaw  = Math.min(1, bandScale * midSum / (midEnd - bassEnd));
+    const trebRaw = Math.min(1, bandScale * trebSum / (trebleEnd - midEnd));
+    const rmsRaw  = Math.sqrt(sqSum / n);
 
     // Same musical envelope at every display cadence: ~18ms attack, ~130ms release.
     const _env = (cur, target) => {
@@ -15615,28 +15625,48 @@ const FlipAudioReact = {
     this._sm.treble = _env(this._sm.treble, trebRaw);
     this._sm.rms    = _env(this._sm.rms,    rmsRaw);
 
-    // The onset path never reads the analyser smoothed at 0.80. Its 256-sample window
-    // is ~5.3ms at 48kHz; an adaptive floor rejects steady tones while preserving hits.
-    let fastRms = 0, spectralFlux = 0, previousSpectrum = 0;
+    // The onset path never reads the analyser smoothed at 0.80. Its 1024-sample window
+    // spans ~21.3ms at 48kHz, enough for low tones; the adaptive floor preserves hits.
+    let fastRms = 0, spectralPower = 0, spectralFlux = 0, previousSpectrum = 0;
     const fast = this._transientAnalyser;
-    if (fast && this._fastTime && this._fastFreqDb && this._fastPrevMag) {
+    if (fast && this._fastTime && this._fastFreqDb && this._fastPrevMag && this._fastFluxMag) {
       fast.getFloatTimeDomainData(this._fastTime);
       fast.getFloatFrequencyData(this._fastFreqDb);
-      for (let i = 0; i < this._fastTime.length; i++) fastRms += this._fastTime[i] * this._fastTime[i];
-      fastRms = Math.sqrt(fastRms / this._fastTime.length);
+      let windowPower = 0;
+      for (let i = 0; i < this._fastTime.length; i++) {
+        windowPower += this._fastTime[i] * this._fastTime[i];
+      }
+      const silentWindow = Math.sqrt(windowPower / this._fastTime.length) < 0.001;
+      const spectrumDecay = Math.exp(-dt / 1.5);
+      const fluxRiseAlpha = 1 - Math.exp(-dt / 0.08);
+      const fastBinHz = (fast.context?.sampleRate || 48000) / fast.fftSize;
+      const fluxStart = Math.ceil(250 / fastBinHz);
       for (let i = 0; i < this._fastFreqDb.length; i++) {
         const magnitude = Number.isFinite(this._fastFreqDb[i]) ? Math.pow(10, this._fastFreqDb[i] / 20) : 0;
         const previous = this._fastPrevMag[i];
+        const fluxReference = this._fastFluxMag[i];
         // Existing tones can breathe with their LFO without becoming false hits;
         // a genuinely new partial still clears both the relative and absolute floor.
-        spectralFlux += Math.max(0, magnitude - previous * 1.50 - 0.0005);
-        previousSpectrum += previous;
-        this._fastPrevMag[i] = magnitude;
+        if (i >= fluxStart) {
+          spectralFlux += Math.max(0, magnitude - fluxReference * 2.00 - 0.0005);
+          previousSpectrum += fluxReference;
+        }
+        const heldMagnitude = silentWindow ? 0 : Math.max(magnitude, previous * spectrumDecay);
+        const nextFluxReference = silentWindow ? 0
+          : magnitude > fluxReference
+            ? fluxReference + (magnitude - fluxReference) * fluxRiseAlpha
+            : Math.max(magnitude, fluxReference * spectrumDecay);
+        spectralPower += heldMagnitude * heldMagnitude;
+        this._fastPrevMag[i] = heldMagnitude;
+        this._fastFluxMag[i] = nextFluxReference;
       }
+      // Spectral energy is phase-stable for sustained low tones; unlike a partial-cycle
+      // time-domain RMS window it cannot manufacture periodic rises at 55/90Hz.
+      fastRms = Math.sqrt(spectralPower);
     }
     const onsetRise = Math.max(0, fastRms - this._fastRmsAvg);
     const rmsOnset = Math.max(0, Math.min(1, onsetRise / Math.max(0.008, this._fastRmsAvg * 0.55)));
-    const fluxOnset = Math.max(0, Math.min(1, spectralFlux / Math.max(0.006, previousSpectrum * 0.25)));
+    const fluxOnset = Math.max(0, Math.min(1, spectralFlux / Math.max(0.006, previousSpectrum * 0.20)));
     const onsetStrength = Math.max(rmsOnset, fluxOnset);
     const floorAlpha = 1 - Math.exp(-dt / (fastRms > this._fastRmsAvg ? 0.12 : 0.45));
     this._fastRmsAvg += (fastRms - this._fastRmsAvg) * floorAlpha;
@@ -20094,7 +20124,7 @@ async function _buildExtAudioChain(deviceId, isCurrent = () => true) {
     nextAnalyser.fftSize = 2048;
     nextAnalyser.smoothingTimeConstant = 0.80;
     const nextTransientAnalyser = nextCtx.createAnalyser();
-    nextTransientAnalyser.fftSize = 256;
+    nextTransientAnalyser.fftSize = 1024;
     nextTransientAnalyser.smoothingTimeConstant = 0;
 
     const src = nextCtx.createMediaStreamSource(nextStream);
