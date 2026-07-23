@@ -19436,15 +19436,15 @@ const _scrashWebGLEngine = (() => {
         float hc = cos(u_hue), hs = sin(u_hue);
         float r = dot(color, vec3(
           0.213 + hc * 0.787 - hs * 0.213,
-          0.715 - hc * 0.715 - hs * 0.715,
-          0.072 - hc * 0.072 + hs * 0.928));
-        float g = dot(color, vec3(
           0.213 - hc * 0.213 + hs * 0.143,
+          0.213 - hc * 0.213 - hs * 0.787));
+        float g = dot(color, vec3(
+          0.715 - hc * 0.715 - hs * 0.715,
           0.715 + hc * 0.285 + hs * 0.140,
-          0.072 - hc * 0.072 - hs * 0.283));
+          0.715 - hc * 0.715 + hs * 0.715));
         float b = dot(color, vec3(
-          0.213 - hc * 0.213 - hs * 0.787,
-          0.715 - hc * 0.715 + hs * 0.715,
+          0.072 - hc * 0.072 + hs * 0.928,
+          0.072 - hc * 0.072 - hs * 0.283,
           0.072 + hc * 0.928 + hs * 0.072));
         color = clamp(vec3(r, g, b), 0.0, 1.0);
       }
@@ -19574,6 +19574,7 @@ const _scrashWebGLEngine = (() => {
         const dt = Math.max(0, t - S.lastT);
         S.lastT = t;
         S.burst *= Math.exp(-dt / SCR_BURST_TAU);
+        if (S.burst < 1e-3) S.burst = 0;
         if (audioMod.transient > 0.45) S.burst = 1;
         dripEff = Math.min(100, dripBase + S.burst * 35 * I);
         chaosEff = Math.min(100, chaosBase + S.burst * 30 * I);
@@ -19634,6 +19635,8 @@ const _scrashWebGLEngine = (() => {
   }
   canvas.addEventListener('webglcontextlost', event => {
     event.preventDefault();
+    if (!warned) console.warn('GLITCH WebGL context lost, using JS fallback.');
+    warned = true;
     failed = true;
     ready = false;
   });
@@ -19701,6 +19704,7 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
     const dt = Math.max(0, t - S.lastT);
     S.lastT = t;
     S.burst *= Math.exp(-dt / SCR_BURST_TAU);
+    if (S.burst < 1e-3) S.burst = 0;
     if (A.transient > 0.45) S.burst = 1;
     dripEff  = Math.min(100, dripBase  + S.burst * 35 * I);
     chaosEff = Math.min(100, chaosBase + S.burst * 30 * I);
