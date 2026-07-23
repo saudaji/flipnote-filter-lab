@@ -11128,6 +11128,16 @@ function _commitTypoInteractionFrame() {
 function _runTypoInteractionFrame(now = performance.now()) {
   _typoInteractiveRAF = 0;
   if (!_isTypoCamInteractive()) return;
+  const basePreviewCap = _getAsciiBasePreviewCap() || 30;
+  const fpsCap = Math.max(
+    IS_ANDROID ? 14 : 18,
+    Math.min(basePreviewCap, _asciiAdaptiveFpsCap || basePreviewCap)
+  );
+  if (_runTypoInteractionFrame._lastNow &&
+      now - _runTypoInteractionFrame._lastNow < 1000 / fpsCap) {
+    _typoInteractiveRAF = requestAnimationFrame(_runTypoInteractionFrame);
+    return;
+  }
   updateTouchReflow();
   const dt = _runTypoInteractionFrame._lastNow ? now - _runTypoInteractionFrame._lastNow : 16.7;
   _runTypoInteractionFrame._lastNow = now;
@@ -14370,13 +14380,18 @@ function _renderVhsStep(srcCanvas, targetCtx, params, audio, t) {
 
 let _pipeA = null, _pipeB = null;
 function _ensurePipeBuffers(w, h) {
-  if (!_pipeA) {
+  const scrashEngine = typeof _scrashWebGLEngine !== 'undefined' ? _scrashWebGLEngine : null;
+  scrashEngine?.ensureReady?.();
+  const cpuFallbackActive = !scrashEngine || !scrashEngine.isReady();
+  if (!_pipeA || _pipeA.__flipCpuFallback !== cpuFallbackActive) {
     _pipeA = document.createElement('canvas');
-    _pipeA.getContext('2d', { willReadFrequently: true });
+    _pipeA.__flipCpuFallback = cpuFallbackActive;
+    _pipeA.getContext('2d', { willReadFrequently: cpuFallbackActive });
   }
-  if (!_pipeB) {
+  if (!_pipeB || _pipeB.__flipCpuFallback !== cpuFallbackActive) {
     _pipeB = document.createElement('canvas');
-    _pipeB.getContext('2d', { willReadFrequently: true });
+    _pipeB.__flipCpuFallback = cpuFallbackActive;
+    _pipeB.getContext('2d', { willReadFrequently: cpuFallbackActive });
   }
   if (_pipeA.width !== w || _pipeA.height !== h) { _pipeA.width = w; _pipeA.height = h; }
   if (_pipeB.width !== w || _pipeB.height !== h) { _pipeB.width = w; _pipeB.height = h; }
@@ -16351,15 +16366,22 @@ function _createRecordingCanvasStream(sourceCanvas, fps = 30, options = {}) {
   try { ctx.imageSmoothingQuality = 'high'; } catch (_) {}
   let rafId = 0;
   let stopped = false;
-  const draw = () => {
+  let lastDrawMs = 0;
+  const minInterval = fps > 0 ? 1000 / fps : 0;
+  const draw = (now = performance.now()) => {
     if (stopped) return;
+    if (lastDrawMs && now - lastDrawMs < minInterval) {
+      rafId = requestAnimationFrame(draw);
+      return;
+    }
+    lastDrawMs = now;
     if (typeof options.renderFrame === 'function') {
       options.renderFrame({
         ctx,
         canvas: proxy,
         width: proxy.width,
         height: proxy.height,
-        now: performance.now(),
+        now,
         sourceCanvas,
         dims,
       });
@@ -16381,7 +16403,7 @@ function _createRecordingCanvasStream(sourceCanvas, fps = 30, options = {}) {
     }
     rafId = requestAnimationFrame(draw);
   };
-  draw();
+  draw(performance.now());
   const stream = proxy.captureStream(fps);
   try {
     const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
@@ -17575,6 +17597,7 @@ let uploadProcessing=false;
 // VIDEO PLAYER (SUBIR)
 // ════════════════════════════════════════════════════════════════════
 let _vidPlayerActive = false, _vidPreviewRafId = null, _vidPlayerUrl = null;
+let _vidPreviewLastFrameMs = 0;
 let _vidPlayerW = 0, _vidPlayerH = 0, _vidSourceDuration = 0, _vidExportStopTimer = null;
 
 function _loadVidPlayer(file) {
@@ -17596,9 +17619,12 @@ function _loadVidPlayer(file) {
     document.getElementById('btnVidPlayPause').textContent = '▶';
     showProgress(false); hideLoadOverlay();
     _vidPlayerActive = true;
-    (function _vidPreview() {
+    _vidPreviewLastFrameMs = 0;
+    (function _vidPreview(ts = performance.now()) {
       if (!_vidPlayerActive) { _vidPreviewRafId = null; return; }
-      if (uploadVid.videoWidth && !uploadVid.paused) {
+      const minInterval = 1000 / 30;
+      if (uploadVid.videoWidth && !uploadVid.paused &&
+          (!_vidPreviewLastFrameMs || ts - _vidPreviewLastFrameMs >= minInterval)) {
         if (uploadMode === 'ascii') {
           renderASCII(uploadVid, _vidPlayerW, _vidPlayerH, false, true);
           ctxUP.drawImage(asciiCvs, 0, 0, upCanvas.width, upCanvas.height);
@@ -17609,6 +17635,7 @@ function _loadVidPlayer(file) {
           renderDithered(uploadVid, _vidPlayerW, _vidPlayerH, ctxUP, false, true, true, _getPal(true));
         }
         _applyMixBlend();
+        _vidPreviewLastFrameMs = ts;
       }
       _vidPreviewRafId = requestAnimationFrame(_vidPreview);
     })();
@@ -17619,6 +17646,7 @@ let _vidExportRec = null, _vidExportChunks = [];
 
 function _stopVidPlayer() {
   _vidPlayerActive = false;
+  _vidPreviewLastFrameMs = 0;
   _clearVideoExportStopTimer();
   if (_vidPreviewRafId) { cancelAnimationFrame(_vidPreviewRafId); _vidPreviewRafId = null; }
   if (_vidExportRec && _vidExportRec.state !== 'inactive') { _stopRecorderSafely(_vidExportRec); }
@@ -18476,11 +18504,13 @@ let sonoAudioCtx   = null;
 let sonoAnalyser   = null;
 let sonoT          = 0;
 let sonoLastRAF    = 0;
+let _sonoLastDomTick = 0;
 let sonoLastBlob   = null;
 let sonoRecorder   = null, sonoRecMime = '', sonoRecGeneration = 0;
 let sonoRecTimer   = null;
 let sonoMixVal     = 0;   // 0=all BLEND, 100=full BLEND
 let sonoChaosVal   = 0;
+let sonoHueVal     = 0;
 let sonoPreset     = 0;   // 0=SONO 1=SCOPE
 let sonoBlendMode  = 'flip'; // 'flip' or 'ascii'
 
@@ -18836,6 +18866,11 @@ function fmtTime(s) {
 function sonoLoop(ts) {
   if (!sonoRunning) { _sonoLoopAlive = false; return; }
   _sonoLoopAlive = true;
+  const minInterval = 1000 / 30;
+  if (sonoLastRAF && ts - sonoLastRAF < minInterval) {
+    requestAnimationFrame(sonoLoop);
+    return;
+  }
   if (sonoLastRAF) sonoT += (ts - sonoLastRAF) / 1000;
   sonoLastRAF = ts;
 
@@ -18844,8 +18879,9 @@ function sonoLoop(ts) {
   const mixN   = sonoMixVal   / 100;
   const sens   = 1.0;
 
-  // Update SONO file progress bar
-  if (sonoFileLoaded && sonoAudioEl.src) {
+  const updateDom = !_sonoLastDomTick || ts - _sonoLastDomTick >= 250;
+  // Progress and level indicators do not need canvas cadence.
+  if (updateDom && sonoFileLoaded && sonoAudioEl.src) {
     const cur = sonoAudioEl.currentTime, dur = sonoAudioEl.duration;
     document.getElementById('sonoProgFill').style.width = (isFinite(dur) && dur > 0 ? (cur / dur) * 100 : 0) + '%';
     document.getElementById('sonoProgTime').textContent = fmtTime(cur);
@@ -18932,11 +18968,14 @@ function sonoLoop(ts) {
     }
   }
 
-  // Amp dot
-  const lum = Math.floor(Math.min(1, audio.amp * 2) * 255);
-  const dot  = document.getElementById('sonoAmpDot');
-  dot.style.background  = `rgb(${lum},${lum >> 1},0)`;
-  dot.style.boxShadow   = lum > 60 ? `0 0 ${lum >> 2}px rgba(255,${lum>>1},0,.7)` : 'none';
+  if (updateDom) {
+    const lum = Math.floor(Math.min(1, audio.amp * 2) * 255);
+    const dot  = document.getElementById('sonoAmpDot');
+    dot.style.background  = `rgb(${lum},${lum >> 1},0)`;
+    dot.style.boxShadow   = lum > 60 ? `0 0 ${lum >> 2}px rgba(255,${lum>>1},0,.7)` : 'none';
+    sonoCvs.style.filter = sonoHueVal > 0 ? `hue-rotate(${sonoHueVal}deg)` : '';
+    _sonoLastDomTick = ts;
+  }
 
   requestAnimationFrame(sonoLoop);
 }
@@ -19028,9 +19067,9 @@ document.getElementById('sonoChaos').addEventListener('input', e => {
   document.getElementById('vSonoChaos').textContent = sonoChaosVal;
 });
 document.getElementById('sonoHue').addEventListener('input', e => {
-  const hue = parseInt(e.target.value);
-  document.getElementById('vSonoHue').textContent = hue + '°';
-  document.getElementById('sonoCanvas').style.filter = hue > 0 ? `hue-rotate(${hue}deg)` : '';
+  sonoHueVal = parseInt(e.target.value);
+  document.getElementById('vSonoHue').textContent = sonoHueVal + '°';
+  if (!sonoRunning) sonoCvs.style.filter = sonoHueVal > 0 ? `hue-rotate(${sonoHueVal}deg)` : '';
 });
 
 // ASCII: default chars button
@@ -20017,6 +20056,7 @@ function renderAlchemy(freqData, timeData, sens, trailsN) {
 let wmpPerfMode    = 0;
 let _wmpFpsHist    = [];
 let _wmpLastFrameT = 0;
+let _wmpLastDomTick = 0;
 
 // ── WMP RANDOM state — up to 3 simultaneous morphs ────────────────────
 let wmpRandom       = false;
@@ -20108,10 +20148,15 @@ function renderMorphLayer(freqData, timeData, sens, trailsN, fromP, toP, t) {
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────
-function wmpLoop() {
+function wmpLoop(ts = performance.now()) {
   if (!wmpRunning) return;
   // FPS-based performance adaptation
-  const _wmpNow = performance.now();
+  const _wmpNow = ts || performance.now();
+  const minInterval = 1000 / 30;
+  if (_wmpLastFrameT > 0 && _wmpNow - _wmpLastFrameT < minInterval) {
+    requestAnimationFrame(wmpLoop);
+    return;
+  }
   if (_wmpLastFrameT > 0) {
     _wmpFpsHist.push(1000 / (_wmpNow - _wmpLastFrameT));
     if (_wmpFpsHist.length > 60) _wmpFpsHist.shift();
@@ -20131,12 +20176,14 @@ function wmpLoop() {
   const trailsN = wmpTrailsVal / 100;
   wmpAlchemyAngle += 0.010; // global time — used by Fire, Ocean, Alchemy
 
-  // Update WMP file progress bar
-  if (document.body.classList.contains('wmp-file') && wmpAudioEl.src) {
+  // Progress DOM runs at 4 Hz; the visualization remains on its own cadence.
+  if ((!_wmpLastDomTick || _wmpNow - _wmpLastDomTick >= 250) &&
+      document.body.classList.contains('wmp-file') && wmpAudioEl.src) {
     const cur = wmpAudioEl.currentTime, dur = wmpAudioEl.duration;
     document.getElementById('wmpProgFill').style.width = (isFinite(dur) && dur > 0 ? (cur / dur) * 100 : 0) + '%';
     document.getElementById('wmpProgTime').textContent = fmtTime(cur);
     document.getElementById('wmpProgDur').textContent  = fmtTime(dur);
+    _wmpLastDomTick = _wmpNow;
   }
 
   // Compute RMS energy for audio-reactive logic
@@ -20997,7 +21044,7 @@ let scrashRecorder = null, scrashRecMime = '', scrashRecGeneration = 0;
 let _scrRafId = null;
 
 const scrashCvs = document.getElementById('scrashCanvas');
-const ctxScrash = scrashCvs.getContext('2d', { willReadFrequently: true });
+const ctxScrash = scrashCvs.getContext('2d', { willReadFrequently: false });
 const _scrTmp    = document.createElement('canvas');
 let _ctxScrTmp;
 // EXT AUDIO source: persistent scrolling buffer used as the GLITCH source image when there's no camera frame
@@ -21541,7 +21588,7 @@ const _scrashWebGLEngine = (() => {
     failed = true;
     ready = false;
   });
-  return { canvas, render, reset, isReady:() => ready && !failed };
+  return { canvas, render, reset, ensureReady:init, isReady:() => ready && !failed };
 })();
 
 let _scrashOutBuffer = new Uint8ClampedArray(0);
@@ -22492,6 +22539,12 @@ if (!FLIP_IS_MOBILE()) {
   let _sfAudioStartT   = 0;
   let _sfFreqData      = null;
   let _sfMaskSmooth    = null;   // persistent Float32Array — temporal smoothing of the raw mask (anti-snapping)
+  let _sfLastFrameMs   = 0;
+  let _sfSegFrame      = 0;
+  let _sfLastMask      = null;
+  let _sfLastMaskW     = 0;
+  let _sfLastMaskH     = 0;
+  let _sfVectorPool    = null;   // {length, dist, nx, ny}; stable after warm-up at a given mask size
   let _sfVisibilityDisabledTracks = [];
   const _sfEff = { density: window._sfParams.density, fill: window._sfParams.fill, thresh: window._sfParams.thresh, dim: window._sfParams.dim, trail: window._sfParams.trail }; // eased param values (lerp target = SFP)
 
@@ -22584,7 +22637,7 @@ if (!FLIP_IS_MOBILE()) {
   const sfVid     = document.getElementById('sflowVid');
   const sfCanvas  = document.getElementById('sflowCanvas');
   const sfBadge   = document.getElementById('sflowStatusBadge');
-  const sfCtx     = sfCanvas.getContext('2d', { willReadFrequently: true });
+  const sfCtx     = sfCanvas.getContext('2d', { willReadFrequently: false });
 
   // ── TRAIL: persistent offscreen canvas the aura glyphs are stamped onto
   // so they leave a fading estela instead of vanishing frame-to-frame.
@@ -22693,10 +22746,22 @@ if (!FLIP_IS_MOBILE()) {
     // threshold: 0-1 confidence cutoff for inside/outside (default 0.5).
     // Lower = more generous/inflated silhouette, higher = stricter.
     if (typeof threshold !== 'number' || !isFinite(threshold)) threshold = 0.5;
-    // dist[i] = distance to nearest boundary pixel
-    const dist  = new Float32Array(W * H);
+    // dist/nx/ny are persistent: MediaPipe's usual 256² mask performs zero
+    // Float32Array(65536) allocations after the first frame.
+    const length = W * H;
+    if (!_sfVectorPool || _sfVectorPool.length !== length) {
+      _sfVectorPool = {
+        length,
+        dist: new Float32Array(length),
+        nx: new Float32Array(length),
+        ny: new Float32Array(length),
+      };
+    }
+    const { dist, nx, ny } = _sfVectorPool;
     const LARGE = 9999;
     dist.fill(LARGE);
+    nx.fill(0);
+    ny.fill(0);
 
     // Mark boundary: inside (mask >= threshold) pixels adjacent to outside
     for (let y = 0; y < H; y++) {
@@ -22741,8 +22806,6 @@ if (!FLIP_IS_MOBILE()) {
     }
 
     // Sobel on dist field → outward normal
-    const nx = new Float32Array(W * H);
-    const ny = new Float32Array(W * H);
     for (let y = 1; y < H - 1; y++) {
       for (let x = 1; x < W - 1; x++) {
         const i = y * W + x;
@@ -23005,6 +23068,9 @@ if (!FLIP_IS_MOBILE()) {
   async function _sfLoop(frameTs) {
     if (!_sfActive) return;
     _sfRafId = requestAnimationFrame(_sfLoop);
+    const minInterval = 1000 / 30;
+    if (_sfLastFrameMs && frameTs - _sfLastFrameMs < minInterval) return;
+    _sfLastFrameMs = frameTs;
 
     if (_sfMode === 'audio') { await _sfLoopAudio(frameTs); return; }
 
@@ -23018,18 +23084,29 @@ if (!FLIP_IS_MOBILE()) {
 
     // ── Run segmentation ─────────────────────────────────────────────
     if (!_sfSegmenter) return;
-    let maskRaw = null;
-    let maskW   = 0;
-    let maskH   = 0;
-    try {
-      const result = _sfSegmenter.segmentForVideo(sfVid, performance.now());
-      if (result?.confidenceMasks?.[0]) {
-        maskRaw = result.confidenceMasks[0].getAsFloat32Array();
-        maskW   = result.confidenceMasks[0].width;
-        maskH   = result.confidenceMasks[0].height;
-        result.close?.();
+    let maskRaw = _sfLastMask;
+    let maskW   = _sfLastMaskW;
+    let maskH   = _sfLastMaskH;
+    const segmentThisFrame = !_sfLastMask || _sfSegFrame === 0;
+    _sfSegFrame = (_sfSegFrame + 1) % 2;
+    if (segmentThisFrame) {
+      let result = null;
+      try {
+        result = _sfSegmenter.segmentForVideo(sfVid, performance.now());
+        if (result?.confidenceMasks?.[0]) {
+          maskRaw = result.confidenceMasks[0].getAsFloat32Array();
+          maskW   = result.confidenceMasks[0].width;
+          maskH   = result.confidenceMasks[0].height;
+          _sfLastMask = maskRaw;
+          _sfLastMaskW = maskW;
+          _sfLastMaskH = maskH;
+        }
+      } catch (_) {
+        if (!_sfLastMask) return;
+      } finally {
+        result?.close?.();
       }
-    } catch (_) { return; }
+    }
     if (!maskRaw) return;
 
     _sfUpdateEff();
@@ -23195,6 +23272,7 @@ if (!FLIP_IS_MOBILE()) {
   // ── Start (audio-driven, no camera / no MediaPipe) ───────────────────
   function _sfStartAudioMode() {
     _sfMode = 'audio';
+    _sfLastFrameMs = 0;
     if (_sfStream) {
       _sfStream.getTracks().forEach(t => t.stop());
       _sfStream = null;
@@ -23236,6 +23314,11 @@ if (!FLIP_IS_MOBILE()) {
     try {
       if (extAudioMode && extAnalyser) { _sfStartAudioMode(); return; }
       _sfMode = 'cam';
+      _sfLastFrameMs = 0;
+      _sfSegFrame = 0;
+      _sfLastMask = null;
+      _sfLastMaskW = 0;
+      _sfLastMaskH = 0;
       _sfFacing = facing || _sfFacing;
       _sfBadge('FLOW — starting…');
 
@@ -23316,6 +23399,11 @@ if (!FLIP_IS_MOBILE()) {
     _sfStarting = false;
     _sfActive = false;
     _sfMode = 'cam';
+    _sfLastFrameMs = 0;
+    _sfSegFrame = 0;
+    _sfLastMask = null;
+    _sfLastMaskW = 0;
+    _sfLastMaskH = 0;
     cancelAnimationFrame(_sfRafId);
     _sfRafId = 0;
     if (_sfStream) {
@@ -23534,7 +23622,9 @@ let _fusionRecordingLocked = false;
 const _fusionPipelineSteps = [{ engine: 'cam' }, { engine: 'glitch', params: { glitch: {} } }];
 const fusionCanvas = document.getElementById('fusionCanvas');
 const ctxFusion = fusionCanvas.getContext('2d');
-const FUSION_OUTPUT_SCALE = 2;
+const FUSION_OUTPUT_SCALE = 1;
+const FUSION_CAPTURE_SCALE = 2;
+let _fusionOutputScale = FUSION_OUTPUT_SCALE;
 
 function _fusionSyncAspectPills() {
   document.querySelectorAll('.fusion-aspect-pill').forEach(btn => {
@@ -23542,6 +23632,20 @@ function _fusionSyncAspectPills() {
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-pressed', String(active));
   });
+}
+
+function _fusionSetOutputScale(scale) {
+  const { width, height } = FUSION_ASPECT_DIMS[fusionAspect];
+  _fusionOutputScale = scale === FUSION_CAPTURE_SCALE ? FUSION_CAPTURE_SCALE : FUSION_OUTPUT_SCALE;
+  const outW = width * _fusionOutputScale;
+  const outH = height * _fusionOutputScale;
+  if (fusionCanvas.width !== outW || fusionCanvas.height !== outH) {
+    fusionCanvas.width = outW;
+    fusionCanvas.height = outH;
+  }
+  // Andy: 1× preview and 2× capture keep the same pixel geometry; NEAREST
+  // preserves the deliberately hard FLIP edges when runPipeline scales.
+  ctxFusion.imageSmoothingEnabled = false;
 }
 
 function _fusionApplyAspect(aspect, options = {}) {
@@ -23557,11 +23661,7 @@ function _fusionApplyAspect(aspect, options = {}) {
     _fusionSrc.height = height;
   }
   _ensurePipeBuffers(width, height);
-  const outW = width * FUSION_OUTPUT_SCALE, outH = height * FUSION_OUTPUT_SCALE;
-  if (fusionCanvas.width !== outW || fusionCanvas.height !== outH) {
-    fusionCanvas.width = outW;
-    fusionCanvas.height = outH;
-  }
+  _fusionSetOutputScale(FUSION_OUTPUT_SCALE);
   _fusionSyncAspectPills();
   if (options.persist !== false) saveSettings();
   return true;
@@ -23596,26 +23696,30 @@ function _fusionGetSrcCanvas() {
   return null;
 }
 
+function _fusionRenderFrame(ts = performance.now()) {
+  const srcCanvas = _fusionGetSrcCanvas();
+  if (!srcCanvas) return false;
+  runPipeline(
+    _fusionPipelineSteps,
+    srcCanvas,
+    ctxFusion,
+    // F4: en móvil el MIC modula FUSION sin reemplazar la cámara (extMicOnlyMode).
+    _readFlipAudioSnapshot(
+      (extAudioMode || extMicOnlyMode) && !!extAnalyser &&
+        _pipelineConsumesFlipAudio(_fusionPipelineSteps),
+      ts
+    ),
+    ts
+  );
+  return true;
+}
+
 function _fusionLoop(ts) {
   if (!fusionRunning) { _fusionLoopAlive = false; return; }
   _fusionLoopAlive = true;
   const minInterval = 1000 / 30;
   if (ts - _fusionLastFrameMs >= minInterval) {
-    const srcCanvas = _fusionGetSrcCanvas();
-    if (srcCanvas) {
-      runPipeline(
-        _fusionPipelineSteps,
-        srcCanvas,
-        ctxFusion,
-        // F4: en móvil el MIC modula FUSION sin reemplazar la cámara (extMicOnlyMode).
-        _readFlipAudioSnapshot(
-          (extAudioMode || extMicOnlyMode) && !!extAnalyser &&
-            _pipelineConsumesFlipAudio(_fusionPipelineSteps),
-          ts
-        ),
-        ts
-      );
-    }
+    _fusionRenderFrame(ts);
     _fusionLastFrameMs = ts;
   }
   requestAnimationFrame(_fusionLoop);
@@ -23683,7 +23787,21 @@ function _fusionLoop(ts) {
   document.getElementById('btnFusionSnap').addEventListener('click', async () => {
     if (!fusionRunning) { flipToast('⚠ Enciende la cámara primero'); return; }
     flash.classList.add('on'); setTimeout(() => flash.classList.remove('on'), 120);
-    await saveBlob(await _canvasToJpeg(fusionCanvas), _flipName('fusion', 'jpg'));
+    const restorePreview = !_fusionRecordingLocked;
+    let blob;
+    try {
+      if (restorePreview) {
+        _fusionSetOutputScale(FUSION_CAPTURE_SCALE);
+        _fusionRenderFrame(performance.now());
+      }
+      blob = await _canvasToJpeg(fusionCanvas);
+    } finally {
+      if (restorePreview) {
+        _fusionSetOutputScale(FUSION_OUTPUT_SCALE);
+        _fusionRenderFrame(performance.now());
+      }
+    }
+    await saveBlob(blob, _flipName('fusion', 'jpg'));
   });
 
   // ── Video record — pattern copied from FLOW's btnSflowRec ──────────
@@ -23702,11 +23820,21 @@ function _fusionLoop(ts) {
     const chunks = [];
     let createdJob = null;
     _fusionRecordingLocked = true;
+    _fusionSetOutputScale(FUSION_CAPTURE_SCALE);
+    _fusionRenderFrame(performance.now());
     try {
-      createdJob = await _createFlipRecordingJob(fusionCanvas, 30, 6_000_000, {});
+      createdJob = await _createFlipRecordingJob(fusionCanvas, 30, 6_000_000, {
+        dims: {
+          width: fusionCanvas.width,
+          height: fusionCanvas.height,
+          aspect: fusionAspect,
+        },
+      });
     } catch (e) {
       if (token === _fuRecGeneration) {
         _fusionRecordingLocked = false;
+        _fusionSetOutputScale(FUSION_OUTPUT_SCALE);
+        _fusionRenderFrame(performance.now());
         flipToast('⚠ Error: ' + e.message);
       }
       return;
@@ -23729,6 +23857,8 @@ function _fusionLoop(ts) {
           _fusionRecordingLocked = false;
           _fuRecorder = null;
           _fuRecTimer = null;
+          _fusionSetOutputScale(FUSION_OUTPUT_SCALE);
+          _fusionRenderFrame(performance.now());
           _fuRecResetUI();
         }
         if (!chunks.length) {
@@ -23757,7 +23887,17 @@ function _fusionLoop(ts) {
 
   // Stop an in-flight recording if the user leaves FUSION
   window._fusionStopRecording = function () {
-    if (_fuRecorder && _fuRecorder.state !== 'inactive') _stopRecorderSafely(_fuRecorder);
+    if (_fuRecorder && _fuRecorder.state !== 'inactive') {
+      _stopRecorderSafely(_fuRecorder);
+      return;
+    }
+    if (_fusionRecordingLocked) {
+      _fuRecGeneration++;
+      _fusionRecordingLocked = false;
+      _fusionSetOutputScale(FUSION_OUTPUT_SCALE);
+      _fusionRenderFrame(performance.now());
+      _fuRecResetUI();
+    }
   };
 })();
 
