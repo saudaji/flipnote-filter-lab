@@ -6234,6 +6234,35 @@ function _getDolphinCaptureSampleDims(options = {}) {
   const even = v => Math.max(32, Math.round(v / 2) * 2);
   return { sampleW: even(DSI_W * scale), sampleH: even(DSI_H * scale) };
 }
+function _drawDolphinCoreResult(sampleCanvas, targetCtx, outW, outH, outScan, isLgcy) {
+  targetCtx.imageSmoothingEnabled = false;
+  targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+
+  const baseGlow = isLgcy ? dlpResonanceVal * 0.7 / 100 : dlpResonanceVal / 100;
+  const glowBlur = isLgcy ? '1.5px' : '3px';
+  if (baseGlow > 0.01) {
+    targetCtx.save();
+    targetCtx.globalCompositeOperation = 'screen';
+    targetCtx.globalAlpha = baseGlow;
+    targetCtx.filter = `blur(${glowBlur})`;
+    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+    targetCtx.filter = 'none';
+    targetCtx.globalAlpha = 1;
+    targetCtx.globalCompositeOperation = 'source-over';
+    targetCtx.restore();
+  }
+  if (isLgcy) {
+    targetCtx.save();
+    targetCtx.globalCompositeOperation = 'screen';
+    targetCtx.globalAlpha = 0.08;
+    targetCtx.filter = 'none';
+    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+    targetCtx.globalAlpha = 1;
+    targetCtx.globalCompositeOperation = 'source-over';
+    targetCtx.restore();
+  }
+  if (outScan) targetCtx.drawImage(outScan, 0, 0, outW, outH);
+}
 function _renderDolphinCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
   const sampleW = Math.max(32, options.sampleW || DSI_W);
   const sampleH = Math.max(32, options.sampleH || DSI_H);
@@ -6251,7 +6280,6 @@ function _renderDolphinCore(source, srcW, srcH, targetCtx, mirror, options = {})
   if (mirror) { sampleCtx.translate(sampleW, 0); sampleCtx.scale(-1, 1); }
   sampleCtx.drawImage(source, sx, sy, sw, sh, 0, 0, sampleW, sampleH);
   sampleCtx.restore();
-  const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
 
   const COLS_STD_AQUA = [[0,13,13],[0,42,68],[0,119,153],[0,229,204]];
   const COLS_STD_WARM = [[10,4,0],[80,22,0],[200,70,0],[255,148,12]];
@@ -6264,6 +6292,17 @@ function _renderDolphinCore(source, srcW, srcH, targetCtx, mirror, options = {})
   else if (!isLgcy && dlpColorMode === 'WARM') COLS = COLS_STD_WARM;
   else if ( isLgcy && dlpColorMode !== 'WARM') COLS = COLS_LGCY_AQUA;
   else                                          COLS = COLS_LGCY_WARM;
+
+  if (!options.forceCPU && typeof _camPaletteWebGLEngine !== 'undefined' &&
+      _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'dolphin', {
+        palette:COLS,
+        contrast:dlpContrastVal / 100,
+      })) {
+    _drawDolphinCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, outScan, isLgcy);
+    return;
+  }
+
+  const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
 
   const cFactor = dlpContrastVal / 100;
   const adjLum = raw => Math.max(0, Math.min(255, ((raw - 128) * cFactor + 128) | 0));
@@ -6294,34 +6333,7 @@ function _renderDolphinCore(source, srcW, srcH, targetCtx, mirror, options = {})
     }
   }
   sampleCtx.putImageData(new ImageData(outBuf, sampleW, sampleH), 0, 0);
-
-  targetCtx.imageSmoothingEnabled = false;
-  targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-
-  const baseGlow = isLgcy ? dlpResonanceVal * 0.7 / 100 : dlpResonanceVal / 100;
-  const glowBlur = isLgcy ? '1.5px' : '3px';
-  if (baseGlow > 0.01) {
-    targetCtx.save();
-    targetCtx.globalCompositeOperation = 'screen';
-    targetCtx.globalAlpha = baseGlow;
-    targetCtx.filter = `blur(${glowBlur})`;
-    targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-    targetCtx.filter = 'none';
-    targetCtx.globalAlpha = 1;
-    targetCtx.globalCompositeOperation = 'source-over';
-    targetCtx.restore();
-  }
-  if (isLgcy) {
-    targetCtx.save();
-    targetCtx.globalCompositeOperation = 'screen';
-    targetCtx.globalAlpha = 0.08;
-    targetCtx.filter = 'none';
-    targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-    targetCtx.globalAlpha = 1;
-    targetCtx.globalCompositeOperation = 'source-over';
-    targetCtx.restore();
-  }
-  if (outScan) targetCtx.drawImage(outScan, 0, 0, outW, outH);
+  _drawDolphinCoreResult(renderTarget.canvas, targetCtx, outW, outH, outScan, isLgcy);
 }
 function renderDolphin(source, srcW, srcH, targetCtx, mirror) {
   _renderDolphinCore(source, srcW, srcH, targetCtx, mirror);
@@ -6351,6 +6363,385 @@ function _mixRGB(a, b, t) {
     Math.max(0, Math.min(255, Math.round(a[2] + (b[2] - a[2]) * t))),
   ];
 }
+
+// Dedicated WebGL context for the palette-based CAM cores. Resources live only
+// in this context; GLITCH and OSCAM keep their own canvases, programs and targets.
+// Every pass renders at the CPU core's sample resolution. The caller performs the
+// canonical nearest-neighbour scale and the existing 2D overlays/glow afterwards.
+const _camPaletteWebGLEngine = (() => {
+  const canvas = document.createElement('canvas');
+  let gl = null;
+  let program = null;
+  let memoryProgram = null;
+  let quad = null;
+  let sourceTex = null;
+  let historyTargets = [null, null];
+  let historyIndex = 0;
+  let historyPrimed = false;
+  let floatHistorySupported = false;
+  let sizeKey = '';
+  let ready = false;
+  let failed = false;
+  let warned = false;
+  const locations = new Map();
+
+  const vertSrc = `
+    attribute vec2 a_position;
+    varying vec2 v_uv;
+    void main() {
+      v_uv = a_position * 0.5 + 0.5;
+      gl_Position = vec4(a_position, 0.0, 1.0);
+    }
+  `;
+  const commonFrag = `
+    precision highp float;
+    varying vec2 v_uv;
+    uniform sampler2D u_source;
+    uniform sampler2D u_prev;
+    uniform vec2 u_size;
+    uniform float u_min_luma;
+    uniform float u_max_luma;
+    uniform float u_primed;
+
+    vec2 pixelUv(float x, float y) {
+      return vec2((x + 0.5) / u_size.x, 1.0 - (y + 0.5) / u_size.y);
+    }
+    float lumaAt(float x, float y) {
+      vec3 rgb = floor(texture2D(u_source, pixelUv(x, y)).rgb * 255.0 + 0.5);
+      return floor(dot(rgb, vec3(77.0, 150.0, 29.0)) / 256.0);
+    }
+    float truncZero(float value) {
+      return value < 0.0 ? ceil(value) : floor(value);
+    }
+    float bayerQuadrant(float xBit, float yBit) {
+      if (yBit < 0.5) return xBit < 0.5 ? 0.0 : 2.0;
+      return xBit < 0.5 ? 3.0 : 1.0;
+    }
+    float bayer4(float x, float y) {
+      float x0 = mod(x, 2.0);
+      float y0 = mod(y, 2.0);
+      float x1 = mod(floor(x / 2.0), 2.0);
+      float y1 = mod(floor(y / 2.0), 2.0);
+      return bayerQuadrant(x0, y0) * 4.0 + bayerQuadrant(x1, y1);
+    }
+    float bayer8(float x, float y) {
+      float x0 = mod(x, 2.0);
+      float y0 = mod(y, 2.0);
+      float x1 = mod(floor(x / 2.0), 2.0);
+      float y1 = mod(floor(y / 2.0), 2.0);
+      float x2 = mod(floor(x / 4.0), 2.0);
+      float y2 = mod(floor(y / 4.0), 2.0);
+      return bayerQuadrant(x0, y0) * 16.0 +
+             bayerQuadrant(x1, y1) * 4.0 +
+             bayerQuadrant(x2, y2);
+    }
+    float xorBit(float a, float b, float bitValue) {
+      return mod(floor(a / bitValue) + floor(b / bitValue), 2.0) * bitValue;
+    }
+    float xor5(float a, float b) {
+      return xorBit(a, b, 1.0) + xorBit(a, b, 2.0) + xorBit(a, b, 4.0) +
+             xorBit(a, b, 8.0) + xorBit(a, b, 16.0);
+    }
+    float dryEInk(float x, float y) {
+      float lum = lumaAt(x, y);
+      float range = max(1.0, u_max_luma - u_min_luma);
+      float base = (lum - u_min_luma) * 255.0 / range;
+      float left = lumaAt(max(0.0, x - 1.0), y);
+      float up = lumaAt(x, max(0.0, y - 1.0));
+      float edge = abs(lum - left) * 0.42 + abs(lum - up) * 0.28;
+      return clamp(base * 0.92 + edge - 8.0, 0.0, 255.0);
+    }
+  `;
+  const paletteFrag = commonFrag + `
+    uniform float u_mode;
+    uniform float u_contrast;
+    uniform vec3 u_col0;
+    uniform vec3 u_col1;
+    uniform vec3 u_col2;
+    uniform vec3 u_col3;
+    uniform vec3 u_col4;
+    uniform vec3 u_col5;
+    uniform vec3 u_col6;
+
+    vec3 paletteColor(float band) {
+      if (band < 0.5) return u_col0;
+      if (band < 1.5) return u_col1;
+      if (band < 2.5) return u_col2;
+      if (band < 3.5) return u_col3;
+      if (band < 4.5) return u_col4;
+      if (band < 5.5) return u_col5;
+      return u_col6;
+    }
+    float adjustedLuma(float raw) {
+      return clamp(truncZero((raw - 128.0) * u_contrast + 128.0), 0.0, 255.0);
+    }
+    void main() {
+      float x = floor(gl_FragCoord.x);
+      float y = u_size.y - 1.0 - floor(gl_FragCoord.y);
+      float lum = lumaAt(x, y);
+      float band = 0.0;
+
+      if (u_mode < 0.5) {
+        float left = adjustedLuma(lumaAt(max(0.0, x - 1.0), y));
+        float up = adjustedLuma(lumaAt(x, max(0.0, y - 1.0)));
+        lum = adjustedLuma(lum);
+        float localLum = lum * 0.72 + left * 0.14 + up * 0.14;
+        float detail = abs(lum - left) + abs(lum - up);
+        float hash = xor5(xor5(mod(x * 13.0, 32.0), mod(y * 19.0, 32.0)), mod(x * y * 3.0, 32.0));
+        float jitter = (hash / 31.0 - 0.5) * (4.0 + min(10.0, detail * 0.06));
+        float value = clamp(localLum + jitter, 0.0, 255.0);
+        band = value < 64.0 ? 0.0 : value < 128.0 ? 1.0 : value < 192.0 ? 2.0 : 3.0;
+      } else if (u_mode < 1.5) {
+        float value = clamp(lum + floor(bayer4(x, y) * 17.0 / 4.0) - 32.0, 0.0, 255.0);
+        band = value > 192.0 ? 0.0 : value > 128.0 ? 1.0 : value > 64.0 ? 2.0 : 3.0;
+      } else if (u_mode < 2.5) {
+        float dry = dryEInk(x, y);
+        float prev = u_primed > 0.5 ? texture2D(u_prev, pixelUv(x, y)).r * 255.0 : dry;
+        float dither = (bayer4(x, y) * 17.0 - 128.0) * 0.08;
+        float paper = (mod(x * 13.0 + y * 7.0, 16.0) - 7.5) * 0.9;
+        float value = clamp(dry * 0.86 + prev * 0.14 + dither + paper, 0.0, 255.0);
+        band = value > 224.0 ? 0.0 : value > 176.0 ? 1.0 : value > 124.0 ? 2.0 : value > 72.0 ? 3.0 : 4.0;
+      } else if (u_mode < 3.5) {
+        float value = clamp(lum + bayer8(x, y) - 32.0, 0.0, 255.0);
+        band = value < 42.0 ? 0.0 : value < 100.0 ? 1.0 : value < 160.0 ? 2.0 :
+               value < 210.0 ? 3.0 : value < 235.0 ? 4.0 : 5.0;
+      } else {
+        float range = max(1.0, u_max_luma - u_min_luma);
+        float norm = (lum - u_min_luma) * 255.0 / range;
+        float left = lumaAt(max(0.0, x - 1.0), y);
+        float up = lumaAt(x, max(0.0, y - 1.0));
+        float edge = (abs(lum - left) + abs(lum - up)) * 0.52;
+        float value = norm * 0.78 + edge * 1.05 + (norm > 180.0 ? 16.0 : 0.0);
+        value = clamp(value, 0.0, 255.0);
+        band = value < 24.0 ? 0.0 : value < 58.0 ? 1.0 : value < 96.0 ? 2.0 :
+               value < 148.0 ? 3.0 : value < 198.0 ? 4.0 : value < 234.0 ? 5.0 : 6.0;
+        if (edge > 42.0) band = min(6.0, band + 1.0);
+      }
+      gl_FragColor = vec4(paletteColor(band) / 255.0, 1.0);
+    }
+  `;
+  const memoryFrag = commonFrag + `
+    void main() {
+      float x = floor(gl_FragCoord.x);
+      float y = u_size.y - 1.0 - floor(gl_FragCoord.y);
+      float dry = dryEInk(x, y);
+      float prev = u_primed > 0.5 ? texture2D(u_prev, pixelUv(x, y)).r * 255.0 : dry;
+      float nextValue = prev * 0.93 + dry * 0.07;
+      gl_FragColor = vec4(nextValue / 255.0, 0.0, 0.0, 1.0);
+    }
+  `;
+
+  function compile(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(shader) || 'unknown shader error';
+      gl.deleteShader(shader);
+      throw new Error(info);
+    }
+    return shader;
+  }
+  function makeProgram(fragmentSource) {
+    const vs = compile(gl.VERTEX_SHADER, vertSrc);
+    const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
+    const nextProgram = gl.createProgram();
+    gl.attachShader(nextProgram, vs);
+    gl.attachShader(nextProgram, fs);
+    gl.linkProgram(nextProgram);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    if (!gl.getProgramParameter(nextProgram, gl.LINK_STATUS)) {
+      const info = gl.getProgramInfoLog(nextProgram) || 'unknown program link error';
+      gl.deleteProgram(nextProgram);
+      throw new Error(info);
+    }
+    return nextProgram;
+  }
+  function cacheLocations(nextProgram, names) {
+    const cached = new Map();
+    cached.set('a_position', gl.getAttribLocation(nextProgram, 'a_position'));
+    for (const name of names) cached.set(name, gl.getUniformLocation(nextProgram, name));
+    locations.set(nextProgram, cached);
+  }
+  function loc(nextProgram, name) {
+    return locations.get(nextProgram).get(name);
+  }
+  function createTexture(w, h, type = null) {
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, type || gl.UNSIGNED_BYTE, null);
+    return texture;
+  }
+  function createTarget(w, h, type = null) {
+    const texture = createTexture(w, h, type);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.deleteTexture(texture);
+      gl.deleteFramebuffer(framebuffer);
+      throw new Error('CAM palette framebuffer incomplete');
+    }
+    return { texture, framebuffer, w, h };
+  }
+  function disposeTarget(target) {
+    if (!target) return;
+    gl.deleteTexture(target.texture);
+    gl.deleteFramebuffer(target.framebuffer);
+  }
+  function clearHistory() {
+    if (!gl) return;
+    for (const target of historyTargets) {
+      if (!target) continue;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
+      gl.viewport(0, 0, target.w, target.h);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    historyIndex = 0;
+    historyPrimed = false;
+  }
+  function ensureSize(w, h) {
+    const nextKey = `${w}x${h}`;
+    if (sizeKey === nextKey) return;
+    sizeKey = nextKey;
+    canvas.width = w;
+    canvas.height = h;
+    disposeTarget(historyTargets[0]);
+    disposeTarget(historyTargets[1]);
+    if (floatHistorySupported) {
+      let firstFloatTarget = null;
+      try {
+        firstFloatTarget = createTarget(w, h, gl.FLOAT);
+        historyTargets = [firstFloatTarget, createTarget(w, h, gl.FLOAT)];
+      } catch (_) {
+        disposeTarget(firstFloatTarget);
+        historyTargets = [null, null];
+        floatHistorySupported = false;
+      }
+    }
+    if (!floatHistorySupported) historyTargets = [createTarget(w, h), createTarget(w, h)];
+    clearHistory();
+  }
+  function useProgram(nextProgram) {
+    gl.useProgram(nextProgram);
+    const position = loc(nextProgram, 'a_position');
+    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+  }
+  function bindTexture(nextProgram, name, texture, unit) {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(loc(nextProgram, name), unit);
+  }
+  function setCommonUniforms(nextProgram, w, h, params, previousTexture) {
+    bindTexture(nextProgram, 'u_source', sourceTex, 0);
+    bindTexture(nextProgram, 'u_prev', previousTexture, 1);
+    gl.uniform2f(loc(nextProgram, 'u_size'), w, h);
+    gl.uniform1f(loc(nextProgram, 'u_min_luma'), params.minLuma ?? 0);
+    gl.uniform1f(loc(nextProgram, 'u_max_luma'), params.maxLuma ?? 255);
+    gl.uniform1f(loc(nextProgram, 'u_primed'), historyPrimed && params.primed !== false ? 1 : 0);
+  }
+  function init() {
+    if (ready) return true;
+    if (failed) return false;
+    try {
+      gl = canvas.getContext('webgl', { alpha:false, antialias:false, premultipliedAlpha:false }) ||
+           canvas.getContext('experimental-webgl', { alpha:false, antialias:false, premultipliedAlpha:false });
+      if (!gl) throw new Error('WebGL unavailable');
+      const floatTexture = gl.getExtension('OES_texture_float');
+      const floatColorBuffer = gl.getExtension('WEBGL_color_buffer_float');
+      floatHistorySupported = !!(floatTexture && floatColorBuffer);
+      quad = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+      sourceTex = createTexture(1, 1);
+      program = makeProgram(paletteFrag);
+      memoryProgram = makeProgram(memoryFrag);
+      const commonNames = ['u_source', 'u_prev', 'u_size', 'u_min_luma', 'u_max_luma', 'u_primed'];
+      cacheLocations(program, commonNames.concat(['u_mode', 'u_contrast', 'u_col0', 'u_col1', 'u_col2', 'u_col3', 'u_col4', 'u_col5', 'u_col6']));
+      cacheLocations(memoryProgram, commonNames);
+      ready = true;
+      return true;
+    } catch (err) {
+      if (!warned) {
+        console.warn('CAM palette WebGL init failed, using CPU fallback.', err);
+        warned = true;
+      }
+      failed = true;
+      ready = false;
+      return false;
+    }
+  }
+  function render(source, w, h, mode, params = {}) {
+    if (!init()) return false;
+    if (mode === 'caskia-eink' && !floatHistorySupported) return false;
+    try {
+      ensureSize(w, h);
+      if (mode === 'caskia-eink' && params.primed === false) clearHistory();
+      gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      const previousTarget = historyTargets[historyIndex];
+
+      if (mode === 'caskia-eink') {
+        const nextIndex = historyIndex ? 0 : 1;
+        const nextTarget = historyTargets[nextIndex];
+        gl.bindFramebuffer(gl.FRAMEBUFFER, nextTarget.framebuffer);
+        gl.viewport(0, 0, w, h);
+        useProgram(memoryProgram);
+        setCommonUniforms(memoryProgram, w, h, params, previousTarget.texture);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        historyIndex = nextIndex;
+      }
+
+      const modeIds = { dolphin:0, 'caskia-std':1, 'caskia-eink':2, 'vfd-std':3, 'vfd-thermal':4 };
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, w, h);
+      useProgram(program);
+      setCommonUniforms(program, w, h, params, previousTarget.texture);
+      gl.uniform1f(loc(program, 'u_mode'), modeIds[mode] ?? 0);
+      gl.uniform1f(loc(program, 'u_contrast'), params.contrast ?? 1);
+      const palette = params.palette || [];
+      for (let i = 0; i < 7; i++) {
+        const color = palette[i] || palette[palette.length - 1] || [0, 0, 0];
+        gl.uniform3f(loc(program, `u_col${i}`), color[0], color[1], color[2]);
+      }
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.flush();
+      if (mode === 'caskia-eink') historyPrimed = true;
+      return true;
+    } catch (err) {
+      if (!warned) {
+        console.warn('CAM palette WebGL runtime failed, using CPU fallback.', err);
+        warned = true;
+      }
+      failed = true;
+      ready = false;
+      return false;
+    }
+  }
+  function resetEInk() {
+    clearHistory();
+  }
+  canvas.addEventListener('webglcontextlost', event => {
+    event.preventDefault();
+    if (!warned) console.warn('CAM palette WebGL context lost, using CPU fallback.');
+    warned = true;
+    failed = true;
+    ready = false;
+  });
+  return { canvas, render, resetEInk, hasEInkHistory:() => historyPrimed, isReady:() => ready && !failed };
+})();
 
 // ════════════════════════════════════════════════════════════════════
 // CASKIA RENDER — LCD retro + E-INK reflectivo
@@ -6604,6 +6995,14 @@ function _getCaskiaCaptureSampleDims(options = {}) {
   const even = v => Math.max(32, Math.round(v / 2) * 2);
   return { sampleW: even(DSI_W * scale), sampleH: even(DSI_H * scale) };
 }
+function _drawCaskiaCoreResult(sampleCanvas, targetCtx, outW, outH, sampleW, sampleH, isEInk) {
+  targetCtx.imageSmoothingEnabled = false;
+  targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+  const overlay = isEInk
+    ? _getCaskiaEInkOverlayCanvas(outW, outH)
+    : _getCaskiaOverlayCanvas(outW, outH, sampleW, sampleH);
+  targetCtx.drawImage(overlay, 0, 0, outW, outH);
+}
 function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
   const sampleW = Math.max(32, options.sampleW || DSI_W);
   const sampleH = Math.max(32, options.sampleH || DSI_H);
@@ -6618,10 +7017,16 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
   if (mirror) { sampleCtx.translate(sampleW, 0); sampleCtx.scale(-1, 1); }
   sampleCtx.drawImage(source, sx, sy, sw, sh, 0, 0, sampleW, sampleH);
   sampleCtx.restore();
-  const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
-  const lum = _fillCamLumBuf(src, sampleW, sampleH);
 
   if (camVariant !== 'E-INK') {
+    if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'caskia-std', {
+      palette:CASKIA_LCD_COLS,
+    })) {
+      _drawCaskiaCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, sampleW, sampleH, false);
+      return;
+    }
+    const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
+    const lum = _fillCamLumBuf(src, sampleW, sampleH);
     for (let y = 0; y < sampleH; y++) {
       for (let x = 0; x < sampleW; x++) {
         const idx = y * sampleW + x;
@@ -6638,12 +7043,12 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
       }
     }
     sampleCtx.putImageData(new ImageData(outBuf, sampleW, sampleH), 0, 0);
-    targetCtx.imageSmoothingEnabled = false;
-    targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-    targetCtx.drawImage(_getCaskiaOverlayCanvas(outW, outH, sampleW, sampleH), 0, 0, outW, outH);
+    _drawCaskiaCoreResult(renderTarget.canvas, targetCtx, outW, outH, sampleW, sampleH, false);
     return;
   }
 
+  const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
+  const lum = _fillCamLumBuf(src, sampleW, sampleH);
   const memory = _ensureCaskiaEInkMemory();
   let minG = 255, maxG = 0;
   for (let i = 0; i < lum.length; i++) {
@@ -6651,6 +7056,20 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
     if (lum[i] > maxG) maxG = lum[i];
   }
   const range = maxG - minG || 1;
+  if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'caskia-eink', {
+    palette:CASKIA_EINK_COLS,
+    minLuma:minG,
+    maxLuma:maxG,
+    primed:_caskiaEInkPrimed,
+  })) {
+    _caskiaEInkPrimed = true;
+    _drawCaskiaCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, sampleW, sampleH, true);
+    return;
+  }
+  if (!options.forceCPU && _camPaletteWebGLEngine.hasEInkHistory()) {
+    _caskiaEInkPrimed = false;
+    _camPaletteWebGLEngine.resetEInk();
+  }
   for (let y = 0; y < sampleH; y++) {
     for (let x = 0; x < sampleW; x++) {
       const idx = y * sampleW + x;
@@ -6677,9 +7096,7 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
   }
   if (memory.length === lum.length) _caskiaEInkPrimed = true;
   sampleCtx.putImageData(new ImageData(outBuf, sampleW, sampleH), 0, 0);
-  targetCtx.imageSmoothingEnabled = false;
-  targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-  targetCtx.drawImage(_getCaskiaEInkOverlayCanvas(outW, outH), 0, 0, outW, outH);
+  _drawCaskiaCoreResult(renderTarget.canvas, targetCtx, outW, outH, sampleW, sampleH, true);
 }
 
 function renderCaskia(source, srcW, srcH, targetCtx, mirror) {
@@ -6947,6 +7364,29 @@ function _getVfdCaptureSampleDims(options = {}) {
   const even = v => Math.max(32, Math.round(v / 2) * 2);
   return { sampleW: even(DSI_W * scale), sampleH: even(DSI_H * scale) };
 }
+function _drawVfdCoreResult(sampleCanvas, targetCtx, outW, outH, isThermal) {
+  targetCtx.imageSmoothingEnabled = false;
+  targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+  targetCtx.save();
+  targetCtx.globalCompositeOperation = 'screen';
+  if (isThermal) {
+    targetCtx.globalAlpha = 0.08;
+    targetCtx.filter = 'blur(1px)';
+    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+  } else {
+    targetCtx.globalAlpha = 0.34;
+    targetCtx.filter = 'blur(4px)';
+    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+    targetCtx.globalAlpha = 0.16;
+    targetCtx.filter = 'blur(1.6px)';
+    targetCtx.drawImage(sampleCanvas, 0, 0, outW, outH);
+  }
+  targetCtx.filter = 'none';
+  targetCtx.globalAlpha = 1;
+  targetCtx.globalCompositeOperation = 'source-over';
+  targetCtx.restore();
+  targetCtx.drawImage(isThermal ? _getVfdThermalOverlayCanvas(outW, outH) : _getVfdOverlayCanvas(outW, outH), 0, 0, outW, outH);
+}
 function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
   const sampleW = Math.max(32, options.sampleW || DSI_W);
   const sampleH = Math.max(32, options.sampleH || DSI_H);
@@ -6961,16 +7401,24 @@ function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
   if (mirror) { sampleCtx.translate(sampleW, 0); sampleCtx.scale(-1, 1); }
   sampleCtx.drawImage(source, sx, sy, sw, sh, 0, 0, sampleW, sampleH);
   sampleCtx.restore();
-  const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
-  const lum = _fillCamLumBuf(src, sampleW, sampleH);
 
   if (camVariant === 'THRML') {
+    const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
+    const lum = _fillCamLumBuf(src, sampleW, sampleH);
     let minG = 255, maxG = 0;
     for (let i = 0; i < lum.length; i++) {
       if (lum[i] < minG) minG = lum[i];
       if (lum[i] > maxG) maxG = lum[i];
     }
     const range = maxG - minG || 1;
+    if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'vfd-thermal', {
+      palette:THRML_COLS,
+      minLuma:minG,
+      maxLuma:maxG,
+    })) {
+      _drawVfdCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, true);
+      return;
+    }
     for (let y = 0; y < sampleH; y++) {
       for (let x = 0; x < sampleW; x++) {
         const idx = y * sampleW + x;
@@ -6996,20 +7444,19 @@ function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
       }
     }
     sampleCtx.putImageData(new ImageData(outBuf, sampleW, sampleH), 0, 0);
-    targetCtx.imageSmoothingEnabled = false;
-    targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-    targetCtx.save();
-    targetCtx.globalCompositeOperation = 'screen';
-    targetCtx.globalAlpha = 0.08;
-    targetCtx.filter = 'blur(1px)';
-    targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-    targetCtx.filter = 'none';
-    targetCtx.restore();
-    targetCtx.drawImage(_getVfdThermalOverlayCanvas(outW, outH), 0, 0, outW, outH);
+    _drawVfdCoreResult(renderTarget.canvas, targetCtx, outW, outH, true);
     return;
   }
 
   const cols = _getVfdStdCols();
+  if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'vfd-std', {
+    palette:cols,
+  })) {
+    _drawVfdCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, false);
+    return;
+  }
+  const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
+  const lum = _fillCamLumBuf(src, sampleW, sampleH);
   for (let y = 0; y < sampleH; y++) {
     for (let x = 0; x < sampleW; x++) {
       const idx = y * sampleW + x;
@@ -7028,21 +7475,7 @@ function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
     }
   }
   sampleCtx.putImageData(new ImageData(outBuf, sampleW, sampleH), 0, 0);
-  targetCtx.imageSmoothingEnabled = false;
-  targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-  targetCtx.save();
-  targetCtx.globalCompositeOperation = 'screen';
-  targetCtx.globalAlpha = 0.34;
-  targetCtx.filter = 'blur(4px)';
-  targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-  targetCtx.globalAlpha = 0.16;
-  targetCtx.filter = 'blur(1.6px)';
-  targetCtx.drawImage(renderTarget.canvas, 0, 0, outW, outH);
-  targetCtx.filter = 'none';
-  targetCtx.globalAlpha = 1;
-  targetCtx.globalCompositeOperation = 'source-over';
-  targetCtx.restore();
-  targetCtx.drawImage(_getVfdOverlayCanvas(outW, outH), 0, 0, outW, outH);
+  _drawVfdCoreResult(renderTarget.canvas, targetCtx, outW, outH, false);
 }
 function renderVFD(source, srcW, srcH, targetCtx, mirror) {
   _renderVfdCore(source, srcW, srcH, targetCtx, mirror);
