@@ -1732,6 +1732,31 @@
       min-width:72px;
       flex:1 1 88px;
     }
+    .ascii-density-row { flex-wrap:wrap; }
+    .ascii-density-row input[type=range] {
+      flex-basis:100%;
+      order:3;
+    }
+    .ascii-density-zones {
+      order:4;
+      width:100%;
+      display:grid;
+      grid-template-columns:repeat(3,1fr);
+      margin-top:-2px;
+      color:var(--dark);
+      font:7px/1 monospace;
+      letter-spacing:.6px;
+      text-transform:uppercase;
+    }
+    .ascii-density-zones span:nth-child(2) { text-align:center; }
+    .ascii-density-zones span:last-child { text-align:right; }
+    .ascii-density-meta {
+      order:5;
+      width:100%;
+      color:var(--mid);
+      font:7px/1.25 monospace;
+      letter-spacing:.25px;
+    }
     .editor-pane-tabs {
       display:flex;
       gap:6px;
@@ -2899,11 +2924,13 @@
         <button class="asp-btn active" data-aw="4" data-ah="3">4:3</button>
         <button class="asp-btn" data-aw="16" data-ah="9">16:9</button>
       </div>
-      <div class="ac-row classic-ascii-only">
-        <span class="ac-lbl">Density</span>
-        <span class="ac-val" id="vChars">100</span>
-        <input type="range" id="acChars" min="1" max="1000" value="100">
+      <div class="ac-row classic-ascii-only ascii-density-row">
+        <span class="ac-lbl">DENSITY</span>
+        <span class="ac-val" id="vChars">FINO · 100</span>
+        <input type="range" id="acChars" min="0" max="1000" value="375" aria-label="Densidad ASCII">
         <button id="btnAsciiDefault" style="flex:0 0 auto;font-size:8px;padding:2px 5px;background:var(--ink);color:var(--mid);border:1px solid var(--dark);font-family:monospace;cursor:pointer;" title="Óptimo para este dispositivo">AUTO</button>
+        <div class="ascii-density-zones" aria-hidden="true"><span>GRUESO</span><span>FINO</span><span>SELLO</span></div>
+        <div class="ascii-density-meta" id="asciiDensityMeta">100×75 · 1024×768 · 9px</div>
       </div>
       <div id="typoCamPanel" class="typo-panel" style="display:none;">
         <div class="typo-row">
@@ -3001,7 +3028,7 @@
         </div>
       </div>
       <div class="ac-row" id="asciiPerfWarn" style="display:none;">
-        <span style="color:#ff8844;font-size:9px;font-family:monospace;">⚠ Preview cadence adapting</span>
+        <span id="asciiPerfText" style="color:#ff8844;font-size:9px;font-family:monospace;">MODO RÁPIDO</span>
       </div>
       <button id="btnSmoothMode">⚡ Live Smooth</button>
       <div id="androidRow">
@@ -4343,6 +4370,7 @@ const _flipOsState = {
 
 let asciiCols     = 100;
 let asciiClassicCols = 100;
+let asciiDensity = 375; // perceptual slider value; maps exactly to the legacy 100 cols default
 let asciiTypoCols = EARLY_IS_ANDROID ? 72 : (EARLY_IS_MOBILE ? 96 : 112);
 let acBrightVal   = 100;
 let acContrastVal = 100;
@@ -4534,6 +4562,42 @@ let chaosVal  = 0;
 function _getAsciiModeCols(mode = asciiSubMode) {
   return mode === 'typo' ? asciiTypoCols : asciiClassicCols;
 }
+const ASCII_DENSITY_MIN = 0;
+const ASCII_DENSITY_MAX = 1000;
+const ASCII_DENSITY_COARSE_END = 333;
+const ASCII_DENSITY_FINE_END = 666;
+function _clampAsciiDensity(value) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.max(ASCII_DENSITY_MIN, Math.min(ASCII_DENSITY_MAX, n)) : 375;
+}
+function _asciiDensityToCols(value) {
+  const density = _clampAsciiDensity(value);
+  if (density <= ASCII_DENSITY_COARSE_END) {
+    return Math.round(20 + 60 * density / ASCII_DENSITY_COARSE_END);
+  }
+  if (density <= ASCII_DENSITY_FINE_END) {
+    return Math.round(80 + 160 * (density - ASCII_DENSITY_COARSE_END) /
+      (ASCII_DENSITY_FINE_END - ASCII_DENSITY_COARSE_END));
+  }
+  return Math.round(240 + 480 * (density - ASCII_DENSITY_FINE_END) /
+    (ASCII_DENSITY_MAX - ASCII_DENSITY_FINE_END));
+}
+function _asciiColsToDensity(value) {
+  const cols = Math.max(20, Math.min(720, Math.round(Number(value) || 100)));
+  if (cols <= 80) return Math.round((cols - 20) / 60 * ASCII_DENSITY_COARSE_END);
+  if (cols <= 240) {
+    return Math.round(ASCII_DENSITY_COARSE_END + (cols - 80) / 160 *
+      (ASCII_DENSITY_FINE_END - ASCII_DENSITY_COARSE_END));
+  }
+  return Math.round(ASCII_DENSITY_FINE_END + (cols - 240) / 480 *
+    (ASCII_DENSITY_MAX - ASCII_DENSITY_FINE_END));
+}
+function _asciiDensityZone(cols) {
+  return cols < 80 ? 'GRUESO' : (cols < 240 ? 'FINO' : 'SELLO');
+}
+function _formatAsciiDensity(cols) {
+  return `${_asciiDensityZone(cols)} · ${Math.round(cols)}`;
+}
 function _getAsciiDefaultCols(mode = asciiSubMode) {
   if (mode === 'typo') return EARLY_IS_ANDROID ? 72 : (EARLY_IS_MOBILE ? 96 : 112);
   return EARLY_IS_ANDROID ? ASCII_ANDROID_DEFAULT : ASCII_DEV_MAX;
@@ -4557,9 +4621,15 @@ function _applyAsciiPresetPreference(mode) {
   asciiCols = asciiSubMode === 'typo' ? asciiTypoCols : asciiClassicCols;
 }
 function _setAsciiModeCols(next, mode = asciiSubMode) {
-  const value = Math.max(1, Math.round(next));
+  const value = mode === 'typo'
+    ? Math.max(1, Math.round(next))
+    : Math.max(20, Math.min(720, Math.round(next)));
   if (mode === 'typo') asciiTypoCols = value;
-  else asciiClassicCols = value;
+  else {
+    asciiClassicCols = value;
+    asciiDensity = _asciiColsToDensity(value);
+    if (typeof _resetAsciiDensityBudget === 'function') _resetAsciiDensityBudget();
+  }
   asciiCols = value;
 }
 function _syncAsciiColsUI() {
@@ -4567,12 +4637,16 @@ function _syncAsciiColsUI() {
   asciiCols = current;
   const sl = document.getElementById('acChars');
   const vl = document.getElementById('vChars');
-  if (sl) sl.value = current;
-  if (vl) vl.textContent = current;
+  if (sl) sl.value = asciiSubMode === 'classic' ? asciiDensity : current;
+  if (vl) vl.textContent = asciiSubMode === 'classic' ? _formatAsciiDensity(
+    typeof _getAsciiEffectiveCols === 'function' ? _getAsciiEffectiveCols() : current
+  ) : current;
   const slUp = document.getElementById('upAcChars');
   const vlUp = document.getElementById('upVChars');
   if (slUp) slUp.value = current;
   if (vlUp) vlUp.textContent = current;
+  if (typeof _syncAsciiDensityCanvas === 'function') _syncAsciiDensityCanvas();
+  if (typeof _syncAsciiDensityMeta === 'function') _syncAsciiDensityMeta();
 }
 function _syncTypoCamUI() {
   document.body.classList.toggle('ascii-typo-mode', asciiSubMode === 'typo');
@@ -12005,6 +12079,7 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
     ctxAscii.globalAlpha = 1;
   }
   lastAsciiText = lines.join('\n');
+  _asciiHasRenderedFrame = true;
 }
 
 // TODO: OSCAM-TYPO HYBRID
@@ -12020,7 +12095,14 @@ function _renderTypoSync(px, SW, SH, colsOverride, forUpload) {
 // ASCII RENDER
 // ════════════════════════════════════════════════════════════════════
 function renderASCII(source, srcW, srcH, mirror, forUpload) {
-  const SW = 512, SH = 384;
+  _syncAsciiDensityCanvas();
+  const densityMetrics = asciiSubMode === 'classic' ? _getAsciiDensityMetrics() : null;
+  const SW = densityMetrics ? densityMetrics.sampleW : 512;
+  const SH = densityMetrics ? densityMetrics.sampleH : 384;
+  if (asciiSample.width !== SW || asciiSample.height !== SH) {
+    asciiSample.width = SW;
+    asciiSample.height = SH;
+  }
 
   // Frame deduplication: if video hasn't advanced and worker is busy, keep last result
   const isLiveVideo = (source === vid || source === asciiVideoEl);
@@ -12063,7 +12145,14 @@ function renderASCII(source, srcW, srcH, mirror, forUpload) {
   _renderASCIISync(px, SW, SH, null, forUpload);
 }
 function _renderASCIICaptureSync(source, srcW, srcH, mirror) {
-  const SW = 512, SH = 384;
+  _syncAsciiDensityCanvas();
+  const densityMetrics = asciiSubMode === 'classic' ? _getAsciiDensityMetrics() : null;
+  const SW = densityMetrics ? densityMetrics.sampleW : 512;
+  const SH = densityMetrics ? densityMetrics.sampleH : 384;
+  if (asciiSample.width !== SW || asciiSample.height !== SH) {
+    asciiSample.width = SW;
+    asciiSample.height = SH;
+  }
   const [sx, sy, sw, sh] = cropCoords(srcW, srcH);
   ctxAS.save();
   if (mirror) { ctxAS.translate(SW, 0); ctxAS.scale(-1, 1); }
@@ -12076,12 +12165,12 @@ function _renderASCIICaptureSync(source, srcW, srcH, mirror) {
     _renderTypoSync(px, SW, SH, asciiCols, false);
     return;
   }
-  _renderASCIISync(px, SW, SH, asciiCols, false);
+  _renderASCIISync(px, SW, SH, _getAsciiEffectiveCols(), false);
 }
 
 function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
   // colsOverride: used by photo capture to bypass preview cap for full quality
-  const _cols = colsOverride || (asciiRecordingHighQuality ? asciiCols : Math.min(asciiCols, ASCII_PREVIEW_MAX));
+  const _cols = colsOverride || _getAsciiEffectiveCols();
   // Build grayscale array with image adjustments
   const { gray, tmp } = _ensureAsciiFloatPools(SW * SH);
   for (let i = 0; i < SW * SH; i++) {
@@ -12128,9 +12217,13 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
   // Setup output
   const grad   = ASCII_GRADIENTS[acGradientVal] || ASCII_GRADIENTS.normal;
   const nChars = grad.length;
-  const fw     = OUT_W - 2 * acFrameVal;
-  const fh     = OUT_H - 2 * acFrameVal;
-  const rows   = Math.max(1, Math.round(_cols * fh / fw));
+  const renderW = asciiCvs.width;
+  const renderH = asciiCvs.height;
+  const frameScale = renderW / Math.max(1, OUT_W);
+  const renderFrame = acFrameVal * frameScale;
+  const fw     = renderW - 2 * renderFrame;
+  const fh     = renderH - 2 * renderFrame;
+  const rows   = _getAsciiGridRows(_cols, fw, fh);
   const cW     = fw / _cols;
   const cH     = fh / rows;
   const sCW    = SW / _cols;
@@ -12140,9 +12233,9 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
 
   // Background
   ctxAscii.fillStyle = pySubMode !== 'off' ? PY_PALETTES[pyPalIdx].bg : `rgb(${acColors.paper})`;
-  ctxAscii.fillRect(0, 0, OUT_W, OUT_H);
+  ctxAscii.fillRect(0, 0, renderW, renderH);
 
-  const fontSize = Math.max(4, Math.floor(cH * 0.92));
+  const fontSize = _getAsciiFontSize(cH, _cols);
   const fontStr  = `bold ${fontSize}px ${asciiFont}`;
   if (fontStr !== _asciiLastFont) { ctxAscii.font = fontStr; _asciiLastFont = fontStr; }
   ctxAscii.textBaseline = 'top';
@@ -12188,7 +12281,7 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
           const token    = bank[(Math.random() * bank.length) | 0];
           const col      = PY_PALETTES[pyPalIdx].code[role];
           ctxAscii.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
-          ctxAscii.fillText(token, acFrameVal + c * cW, acFrameVal + r * cH);
+          ctxAscii.fillText(token, renderFrame + c * cW, renderFrame + r * cH);
         } else if (pySubMode === 'chars') {
           // CHARS mode: map luminosity to palette color array
           const cols  = PY_PALETTES[pyPalIdx].chars;
@@ -12196,16 +12289,17 @@ function _renderASCIISync(px, SW, SH, colsOverride, forUpload) {
           const colIdx= Math.min(cols.length - 1, Math.floor(tN * cols.length));
           const col   = cols[colIdx];
           ctxAscii.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
-          ctxAscii.fillText(ch, acFrameVal + c * cW, acFrameVal + r * cH);
+          ctxAscii.fillText(ch, renderFrame + c * cW, renderFrame + r * cH);
         } else {
           ctxAscii.fillStyle = `rgb(${acColors.ink})`;
-          ctxAscii.fillText(ch, acFrameVal + c * cW, acFrameVal + r * cH);
+          ctxAscii.fillText(ch, renderFrame + c * cW, renderFrame + r * cH);
         }
       }
     }
     lines.push(line);
   }
   lastAsciiText = lines.join('\n');
+  _asciiHasRenderedFrame = true;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -12626,11 +12720,11 @@ function _asciiWorkerBody() {
     const ctx=_osc.getContext('2d'); ctx.imageSmoothingEnabled=false;
     const grad=GRADS[s.gradient]||GRADS.normal, nChars=grad.length;
     const fw=s.outW-2*s.frame, fh=s.outH-2*s.frame;
-    const cols=s.cols, rows=Math.max(1,Math.round(cols*fh/fw));
+    const cols=s.cols, rows=s.rows||Math.max(1,Math.round(cols*fh/fw));
     const cW=fw/cols, cH=fh/rows, sCW=sw/cols, sCH=sh/rows;
     ctx.fillStyle=s.pyMode!=='off'?PYPAL[s.pyPal].bg:`rgb(${s.palPaper})`;
     ctx.fillRect(0,0,s.outW,s.outH);
-    const fontSize=Math.max(4,Math.floor(cH*0.92));
+    const fontSize=s.fontSize||Math.max(4,Math.floor(cH*0.92));
     const font=`bold ${fontSize}px ${s.font||'monospace'}`;
     ctx.font=font; ctx.textBaseline='top';
     const useAtlas=s.useAtlas!==false&&s.pyMode==='off';
@@ -12735,6 +12829,8 @@ function _asciiWorkerBody() {
       asciiSubMode:e.data.asciiSubMode,
       OUT_W:e.data.OUT_W,
       OUT_H:e.data.OUT_H,
+      BASE_OUT_W:e.data.BASE_OUT_W,
+      BASE_OUT_H:e.data.BASE_OUT_H,
       renderMs,
       prepMs:gridStart-renderStart,
       gridMs:gridEnd-gridStart,
@@ -12746,6 +12842,7 @@ function _asciiWorkerBody() {
 let _asciiWorker      = null;
 let _asciiWorkerBusy  = false;
 let _asciiWorkerPend  = null;   // {imgData, sw, sh} — latest pending frame
+let _asciiHasRenderedFrame = false;
 let _asciiAtlasEnabled = true;
 let _asciiWorkerImagePool = [];
 let _asciiWorkerPoolDims = '';
@@ -12877,6 +12974,8 @@ const _asciiWorkerStats = {
   gpuReadbacks: 0,
   fallbackReadbacks: 0,
   lastRenderMs: 0,
+  movingAverageMs: 0,
+  effectiveCols: 100,
 };
 
 function _ensureAsciiWorkerImagePool(sw, sh) {
@@ -12934,22 +13033,31 @@ function _initAsciiWorker() {
           _asciiWorkerStats.returnedBuffers++;
         } catch (_) {}
       }
+      const legacyFrameMatches = e.data.OUT_W === OUT_W && e.data.OUT_H === OUT_H;
       const frameMatches = e.data.asciiSubMode === asciiSubMode &&
-        e.data.OUT_W === OUT_W && e.data.OUT_H === OUT_H;
+        e.data.OUT_W === asciiCvs.width && e.data.OUT_H === asciiCvs.height &&
+        (legacyFrameMatches || (e.data.BASE_OUT_W === OUT_W && e.data.BASE_OUT_H === OUT_H));
       if (frameMatches) {
         ctxAscii.drawImage(e.data.bitmap, 0, 0);
         if (typeof e.data.text === 'string') lastAsciiText = e.data.text;
         _asciiWorkerStats.acceptedFrames++;
+        _asciiHasRenderedFrame = true;
       } else {
         _asciiWorkerStats.discardedFrames++;
       }
       e.data.bitmap.close();
-      if (Number.isFinite(e.data.renderMs)) _asciiWorkerStats.lastRenderMs = e.data.renderMs;
+      if (Number.isFinite(e.data.renderMs)) {
+        _asciiWorkerStats.lastRenderMs = e.data.renderMs;
+        _asciiTrackFrameBudget(e.data.renderMs);
+      }
       _asciiWorkerBusy = false;
       if (_asciiWorkerPend) {
         const p = _asciiWorkerPend; _asciiWorkerPend = null;
-        if (p.asciiSubMode === asciiSubMode && p.OUT_W === OUT_W &&
-            p.OUT_H === OUT_H && asciiSubMode === 'classic') {
+        const legacyPendingHeightMatches = p.OUT_H === OUT_H;
+        if (p.asciiSubMode === asciiSubMode && p.OUT_W === asciiCvs.width &&
+            p.OUT_H === asciiCvs.height && p.BASE_OUT_W === OUT_W &&
+            (legacyPendingHeightMatches || p.BASE_OUT_H === OUT_H) &&
+            asciiSubMode === 'classic') {
           _dispatchAsciiWorker(p.imgData, p.sw, p.sh, p.forUpload);
         } else {
           _releaseAsciiWorkerImageData(p.imgData, p.sw, p.sh);
@@ -12969,19 +13077,21 @@ function _initAsciiWorker() {
 
 function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
   const frameMode = asciiSubMode;
-  const frameOutW = OUT_W;
-  const frameOutH = OUT_H;
+  const metrics = _getAsciiDensityMetrics();
+  const frameOutW = asciiCvs.width;
+  const frameOutH = asciiCvs.height;
   const acColors = _getAsciiClassicColors(forUpload || false);
   const s = {
-    // Recording bypasses the preview cap so exported video keeps the chosen density
-    cols: asciiRecordingHighQuality ? asciiCols : Math.min(asciiCols, ASCII_PREVIEW_MAX),
+    cols: metrics.cols,
+    rows: metrics.rows,
+    fontSize: metrics.fontPx,
     font: asciiFont,
     bright: acBrightVal, contrast: acContrastVal, sat: acSatVal, hue: acHueVal,
     gray: acGrayVal, sepia: acSepiaVal, invert: acInvertVal,
     threshOn: acThreshOn, thresh: acThreshVal,
     sharpOn: acSharpOn, sharp: acSharpVal,
     edgeOn: acEdgeOn, edge: acEdgeVal,
-    gradient: acGradientVal, space: acSpaceVal, frame: acFrameVal,
+    gradient: acGradientVal, space: acSpaceVal, frame: metrics.frame,
     pyMode: pySubMode, pyPal: pyPalIdx, chaos: chaosVal,
     outW: frameOutW, outH: frameOutH,
     palInk: acColors.ink, palPaper: acColors.paper, invertMap: acColors.invertMap,
@@ -12991,6 +13101,7 @@ function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
     _asciiWorkerPend = {
       imgData, sw, sh, forUpload,
       asciiSubMode:frameMode, OUT_W:frameOutW, OUT_H:frameOutH,
+      BASE_OUT_W:OUT_W, BASE_OUT_H:OUT_H,
     };
     return;
   }
@@ -13004,6 +13115,8 @@ function _dispatchAsciiWorker(imgData, sw, sh, forUpload) {
     asciiSubMode:frameMode,
     OUT_W:frameOutW,
     OUT_H:frameOutH,
+    BASE_OUT_W:OUT_W,
+    BASE_OUT_H:OUT_H,
   }, [imgData.data.buffer]);
 }
 
@@ -13313,6 +13426,8 @@ function applyCamAspect(aw, ah) {
   if (typeof _buildVfdThermalOverlay === 'function') _buildVfdThermalOverlay();
   if (typeof _buildOscamOverlay === 'function') _buildOscamOverlay();
   if (typeof _resetOscamPersistence === 'function') _resetOscamPersistence();
+  _syncAsciiDensityCanvas();
+  _syncAsciiDensityMeta();
   _syncAspectButtonsUI();
   if (typeof flipAudioSettings === 'object' && flipAudioSettings) {
     const nextAspectId = _getCurrentAspectId();
@@ -13356,10 +13471,182 @@ let camFpsEnabled = true, camFpsTarget = 8, camLastFrameMs = 0;
 const _isMobile      = FLIP_IS_MOBILE();
 const IS_ANDROID     = /Android/i.test(navigator.userAgent);
 const _IS_IOS        = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-const ASCII_DEV_MAX     = IS_ANDROID ? 120 : (_isMobile ? 900 : 1400);
-// Live preview cap: still lighter than final render, but high enough to recover dense glyph texture.
-const ASCII_PREVIEW_MAX = IS_ANDROID ? 72 : (_isMobile ? 220 : 420);
+const ASCII_DEV_MAX     = 720;
+// T23 renders the selected effective density in preview; the measured frame
+// budget below is now the cap instead of silently reducing only the preview.
+const ASCII_PREVIEW_MAX = 720;
 const ASCII_ANDROID_DEFAULT = 56;
+const ASCII_MOBILE_SEAL_CAP = 480;
+const ASCII_FRAME_BUDGET_MS = 24;
+const ASCII_OUTPUT_LONG_HARD_MAX = 4096;
+const ASCII_OUTPUT_LONG_TARGET = _isMobile ? 2048 : 3072;
+const ASCII_PERF_STEPS = [720, 600, 480, 360, 240, 160];
+let _asciiPerfMaxCols = _isMobile ? ASCII_MOBILE_SEAL_CAP : ASCII_DEV_MAX;
+let _asciiBudgetSamples = [];
+let _asciiBudgetStableFrames = 0;
+let _asciiFastModeToastShown = false;
+let _asciiLastBudgetAverage = 0;
+
+function _asciiRowScale(cols) {
+  if (cols <= 240) return 1;
+  return 1 + 0.35 * Math.min(1, (cols - 240) / 480);
+}
+function _getAsciiGridRows(cols, width, height) {
+  return Math.max(1, Math.round(cols * height / Math.max(1, width) * _asciiRowScale(cols)));
+}
+function _getAsciiFontSize(cellH, cols) {
+  // Exact legacy integer math through 160 cols is load-bearing for pixel parity.
+  if (cols <= 160) return Math.max(4, Math.floor(cellH * 0.92));
+  // Quarter-pixel buckets keep the T15 atlas useful without creating one cache
+  // entry for every floating-point variation. The 32 MB LRU budget remains hard.
+  return Math.max(3, Math.round(cellH * 0.92 * 4) / 4);
+}
+function _getAsciiEffectiveCols() {
+  if (asciiSubMode === 'typo') return asciiTypoCols;
+  return Math.max(20, Math.min(asciiClassicCols, _asciiPerfMaxCols));
+}
+function _getAsciiDensityMetrics(colsOverride = null) {
+  const cols = Math.max(20, Math.min(720, Math.round(colsOverride || _getAsciiEffectiveCols())));
+  const baseW = Math.max(2, OUT_W);
+  const baseH = Math.max(2, OUT_H);
+  let width = baseW;
+  let height = baseH;
+  if (cols > 240) {
+    width = Math.max(baseW, Math.ceil(cols * 3));
+    height = Math.round(width * baseH / baseW);
+  }
+  const requestedLong = Math.max(width, height);
+  if (requestedLong > ASCII_OUTPUT_LONG_HARD_MAX) {
+    const scale = ASCII_OUTPUT_LONG_HARD_MAX / requestedLong;
+    width = Math.max(2, Math.floor(width * scale / 2) * 2);
+    height = Math.max(2, Math.floor(height * scale / 2) * 2);
+  } else {
+    width = Math.max(2, Math.ceil(width / 2) * 2);
+    height = Math.max(2, Math.ceil(height / 2) * 2);
+  }
+  const frameScale = width / baseW;
+  const frame = acFrameVal * frameScale;
+  const usableW = Math.max(1, width - 2 * frame);
+  const usableH = Math.max(1, height - 2 * frame);
+  const rows = _getAsciiGridRows(cols, usableW, usableH);
+  // Preserve source aspect while ensuring at least one source sample per row.
+  let sampleW = Math.max(512, Math.ceil(rows * usableW / usableH));
+  sampleW = Math.ceil(sampleW / 2) * 2;
+  const sampleH = Math.max(rows, Math.ceil(sampleW * baseH / baseW));
+  const cellH = usableH / rows;
+  const fontPx = _getAsciiFontSize(cellH, cols);
+  return {
+    cols,
+    rows,
+    cells:cols * rows,
+    width,
+    height,
+    sampleW,
+    sampleH,
+    frame,
+    fontPx,
+    glyphRealPx:fontPx,
+    zone:_asciiDensityZone(cols),
+    deviceLongTarget:ASCII_OUTPUT_LONG_TARGET,
+    hardLongMax:ASCII_OUTPUT_LONG_HARD_MAX,
+  };
+}
+function _syncAsciiDensityCanvas() {
+  if (!asciiCvs) return false;
+  const metrics = asciiSubMode === 'classic'
+    ? _getAsciiDensityMetrics()
+    : { width:OUT_W, height:OUT_H };
+  if (asciiCvs.width === metrics.width && asciiCvs.height === metrics.height) return false;
+  asciiCvs.width = metrics.width;
+  asciiCvs.height = metrics.height;
+  _asciiHasRenderedFrame = false;
+  ctxAscii.imageSmoothingEnabled = false;
+  _asciiLastFont = '';
+  if (typeof relayout === 'function') relayout();
+  return true;
+}
+function _syncAsciiDensityMeta() {
+  const metrics = _getAsciiDensityMetrics();
+  const value = document.getElementById('vChars');
+  const meta = document.getElementById('asciiDensityMeta');
+  if (value && asciiSubMode === 'classic') value.textContent = _formatAsciiDensity(metrics.cols);
+  if (meta) {
+    const limited = metrics.cols < asciiClassicCols ? ` · pedido ${asciiClassicCols}` : '';
+    meta.textContent = `${metrics.cols}×${metrics.rows} · ${metrics.cells.toLocaleString()} celdas · ` +
+      `${metrics.width}×${metrics.height} · ${metrics.fontPx}px${limited}`;
+  }
+  const perf = document.getElementById('asciiPerfText');
+  if (perf && _asciiLastBudgetAverage) {
+    perf.textContent = `MODO RÁPIDO · ${_asciiLastBudgetAverage.toFixed(1)}ms · ${metrics.cols} cols`;
+  }
+}
+function _resetAsciiDensityBudget() {
+  _asciiPerfMaxCols = _isMobile ? ASCII_MOBILE_SEAL_CAP : ASCII_DEV_MAX;
+  _asciiBudgetSamples = [];
+  _asciiBudgetStableFrames = 0;
+  _asciiLastBudgetAverage = 0;
+  const warn = document.getElementById('asciiPerfWarn');
+  if (warn) warn.style.display = 'none';
+  if (typeof asciiCvs !== 'undefined' && asciiCvs) {
+    _syncAsciiDensityCanvas();
+    _syncAsciiDensityMeta();
+  }
+}
+function _setAsciiPerfCap(nextCap, averageMs) {
+  const current = _asciiPerfMaxCols;
+  _asciiPerfMaxCols = Math.max(160, Math.min(ASCII_DEV_MAX, Math.round(nextCap)));
+  _asciiLastBudgetAverage = averageMs;
+  if (_asciiPerfMaxCols === current) return false;
+  _syncAsciiDensityCanvas();
+  _syncAsciiDensityMeta();
+  if (asciiStaticSrc) asciiSettingsChanged();
+  return true;
+}
+function _asciiTrackFrameBudget(renderMs) {
+  if (asciiSubMode !== 'classic' || asciiClassicCols <= 240 || !Number.isFinite(renderMs)) return;
+  _asciiBudgetSamples.push(renderMs);
+  if (_asciiBudgetSamples.length > 10) _asciiBudgetSamples.shift();
+  if (_asciiBudgetSamples.length < 10) return;
+  const average = _asciiBudgetSamples.reduce((sum, value) => sum + value, 0) / _asciiBudgetSamples.length;
+  _asciiLastBudgetAverage = average;
+  _asciiWorkerStats.movingAverageMs = average;
+  _asciiWorkerStats.effectiveCols = _getAsciiEffectiveCols();
+  if (average > ASCII_FRAME_BUDGET_MS) {
+    const next = ASCII_PERF_STEPS.find(step => step < _asciiPerfMaxCols) || 160;
+    if (_setAsciiPerfCap(next, average)) {
+      const warn = document.getElementById('asciiPerfWarn');
+      if (warn) warn.style.display = 'flex';
+      if (!_asciiFastModeToastShown) {
+        _asciiFastModeToastShown = true;
+        flipToast('modo rápido');
+      }
+    }
+    _asciiBudgetSamples = [];
+    _asciiBudgetStableFrames = 0;
+    return;
+  }
+  if (_isMobile && asciiClassicCols > _asciiPerfMaxCols && average < 12) {
+    _asciiBudgetStableFrames += 1;
+    if (_asciiBudgetStableFrames >= 60) {
+      const next = [...ASCII_PERF_STEPS].reverse().find(step => step > _asciiPerfMaxCols) || ASCII_DEV_MAX;
+      _setAsciiPerfCap(Math.min(next, asciiClassicCols), average);
+      _asciiBudgetSamples = [];
+      _asciiBudgetStableFrames = 0;
+    }
+  } else {
+    _asciiBudgetStableFrames = 0;
+  }
+  _syncAsciiDensityMeta();
+}
+window._asciiDensityDebug = {
+  metrics:_getAsciiDensityMetrics,
+  track:_asciiTrackFrameBudget,
+  reset:_resetAsciiDensityBudget,
+  densityToCols:_asciiDensityToCols,
+  colsToDensity:_asciiColsToDensity,
+  get cap() { return _asciiPerfMaxCols; },
+  get averageMs() { return _asciiLastBudgetAverage; },
+};
 let asciiFrameSkip   = 0;
 let _asciiFpsHist    = [];
 let _asciiLastFT     = 0;
@@ -13672,7 +13959,7 @@ function asciiLoop(ts) {
 function clearAsciiStatic() {
   asciiStaticSrc = null; asciiStaticW = 0; asciiStaticH = 0;
   if (asciiVideoEl) { asciiVideoEl.pause(); asciiVideoEl.removeAttribute('src'); asciiVideoEl = null; }
-  ctxAscii.fillStyle = '#000'; ctxAscii.fillRect(0, 0, OUT_W, OUT_H);
+  ctxAscii.fillStyle = '#000'; ctxAscii.fillRect(0, 0, asciiCvs.width, asciiCvs.height);
   _syncCamZoomUI();
   if (asciiRunning && !_asciiLoopAlive) requestAnimationFrame(asciiLoop);
 }
@@ -13710,16 +13997,22 @@ function _rigSeconds(ts) {
 let _asciiStepCv = null, _asciiStepCtx = null;
 function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
   const p = params || {};
-  const cols = Math.max(20, Math.min(160, p.cols || 80));
+  const cols = Math.max(20, Math.min(720, Math.round(p.cols || 80)));
   const W = targetCtx.canvas.width, H = targetCtx.canvas.height;
   if (!W || !H) return;
 
-  // Sample source at a modest internal resolution for perf.
-  const SW = 256, SH = 192;
+  const rowScale = cols <= 240 ? 1 : 1 + 0.35 * Math.min(1, (cols - 240) / 480);
+  const rows = Math.max(1, Math.round(cols * H / W * rowScale));
+  let SW = Math.max(256, Math.ceil(rows * W / H));
+  SW = Math.ceil(SW / 2) * 2;
+  const SH = Math.max(rows, Math.round(SW * H / W));
   if (!_asciiStepCv) {
     _asciiStepCv = document.createElement('canvas');
-    _asciiStepCv.width = SW; _asciiStepCv.height = SH;
     _asciiStepCtx = _asciiStepCv.getContext('2d', { willReadFrequently: true });
+  }
+  if (_asciiStepCv.width !== SW || _asciiStepCv.height !== SH) {
+    _asciiStepCv.width = SW;
+    _asciiStepCv.height = SH;
   }
   const tctx = _asciiStepCtx;
   tctx.clearRect(0, 0, SW, SH); // el canvas cacheado retendria el frame anterior con fuentes alfa
@@ -13728,7 +14021,6 @@ function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
 
   const grad = ASCII_GRADIENTS[p.gradient] || ASCII_GRADIENTS.normal;
   const nChars = grad.length;
-  const rows = Math.max(1, Math.round(cols * H / W));
   const cW = W / cols, cH = H / rows;
   const sCW = SW / cols, sCH = SH / rows;
 
@@ -13741,7 +14033,9 @@ function _renderAsciiStep(srcCanvas, targetCtx, params, t) {
   targetCtx.fillStyle = `rgb(${paper})`;
   targetCtx.fillRect(0, 0, W, H);
 
-  const fontSize = Math.max(4, Math.floor(cH * 0.92));
+  const fontSize = cols <= 160
+    ? Math.max(4, Math.floor(cH * 0.92))
+    : Math.max(3, Math.round(cH * 0.92 * 4) / 4);
   targetCtx.font = `bold ${fontSize}px monospace`;
   targetCtx.textBaseline = 'top';
   targetCtx.fillStyle = `rgb(${ink})`;
@@ -14302,18 +14596,6 @@ function flipToast(message, duration = 3000) {
   container.appendChild(toast);
   setTimeout(() => toast.remove(), duration);
 }
-
-// Watch asciiPerfWarn: if it becomes visible (inside collapsed panel), fire a toast
-(function() {
-  const el = document.getElementById('asciiPerfWarn');
-  if (!el) return;
-  let _lastVisible = false;
-  new MutationObserver(() => {
-    const isVisible = el.style.display !== 'none' && el.style.display !== '';
-    if (isVisible && !_lastVisible) flipToast('⚠ Ajustando ritmo del preview');
-    _lastVisible = isVisible;
-  }).observe(el, { attributes: true, attributeFilter: ['style'] });
-})();
 
 // V50: Unified bottom nav
 // Helper: read icon text from original button
@@ -15980,7 +16262,24 @@ function _createRecordingCanvasStream(sourceCanvas, fps = 30, options = {}) {
   };
 }
 async function _createFlipRecordingJob(canvas, fps, videoBitsPerSecond, options = {}) {
-  const dims = _getFlipRecordDimensions(canvas, options);
+  const requestedDims = options.dims;
+  const dims = requestedDims && requestedDims.width > 0 && requestedDims.height > 0
+    ? (() => {
+        let width = Number(requestedDims.width);
+        let height = Number(requestedDims.height);
+        const longSide = Math.max(width, height);
+        if (longSide > 4096) {
+          const scale = 4096 / longSide;
+          width *= scale;
+          height *= scale;
+        }
+        return {
+          width:Math.max(2, Math.round(width / 2) * 2),
+          height:Math.max(2, Math.round(height / 2) * 2),
+          aspect:requestedDims.aspect || options.aspectRatio || _getCurrentAspectId(),
+        };
+      })()
+    : _getFlipRecordDimensions(canvas, options);
   const canvasCapture = _createRecordingCanvasStream(canvas, fps, { ...options, dims });
   let audioReady = false;
   try {
@@ -16337,7 +16636,7 @@ function _applyPreset(settings) {
   Object.entries(settings).forEach(([id, val]) => {
     const el = document.getElementById(id);
     if (!el) return;
-    el.value = val;
+    el.value = id === 'acChars' ? _asciiColsToDensity(val) : val;
     el.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
@@ -17077,7 +17376,7 @@ async function handleFile(file){
   if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;vid.srcObject=null;_clearCamZoomSupport();_syncCamZoomUI();}
   cameraRunning=false; asciiRunning=false;
   ctxD.fillStyle='#000'; ctxD.fillRect(0,0,OUT_W,OUT_H);
-  ctxAscii.fillStyle='#000'; ctxAscii.fillRect(0,0,OUT_W,OUT_H);
+  ctxAscii.fillStyle='#000'; ctxAscii.fillRect(0,0,asciiCvs.width,asciiCvs.height);
   if(uploadMode==='ascii'&&isImage){
     setProgress(20,'Leyendo imagen…');
     const url=URL.createObjectURL(file);
@@ -17330,17 +17629,34 @@ document.getElementById('btnSplashStage').addEventListener('click', e => {
 // ════════════════════════════════════════════════════════════════════
 // ASCII CAPTURE & SHARE
 // ════════════════════════════════════════════════════════════════════
+async function _ensureAsciiClassicCaptureFrame(captureSource) {
+  if (_asciiHasRenderedFrame || !captureSource) return;
+  const deadline = performance.now() + 12000;
+  while (!_asciiHasRenderedFrame && performance.now() < deadline) {
+    if (!_asciiWorkerBusy && _asciiWorker) {
+      renderASCII(captureSource.source, captureSource.srcW, captureSource.srcH, captureSource.mirror, false);
+    }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  // Browsers without OffscreenCanvas keep the synchronous fallback.
+  if (!_asciiHasRenderedFrame) {
+    renderASCII(captureSource.source, captureSource.srcW, captureSource.srcH, captureSource.mirror, true);
+  }
+}
 document.getElementById('btnAsciiCapture').addEventListener('click', async () => {
   if (asciiCamMode === 'foto') {
-    // Take photo — re-render at full quality if live preview was capped
+    // Take photo at the density-aware canvas size, never at the CSS preview size.
     flash.classList.add('on'); setTimeout(() => flash.classList.remove('on'), 120);
-    if (asciiSubMode === 'typo' && asciiCols > TYPO_PREVIEW_MAX) {
-      const { data: _px } = ctxAS.getImageData(0, 0, 512, 384);
-      _renderTypoSync(_px, 512, 384, asciiCols, false);
-    } else if (asciiCols > ASCII_PREVIEW_MAX) {
-      // Sync render at full asciiCols using last-sampled ctxAS frame
-      const { data: _px } = ctxAS.getImageData(0, 0, 512, 384);
-      _renderASCIISync(_px, 512, 384, asciiCols);
+    const captureSource = _getAsciiCaptureSource();
+    if (captureSource && asciiSubMode === 'typo') {
+      _renderASCIICaptureSync(captureSource.source, captureSource.srcW, captureSource.srcH, captureSource.mirror);
+    } else if (captureSource && !_asciiHasRenderedFrame) {
+      await _ensureAsciiClassicCaptureFrame(captureSource);
+    } else if (!captureSource && !_asciiHasRenderedFrame) {
+      const SW = asciiSample.width, SH = asciiSample.height;
+      const { data: _px } = ctxAS.getImageData(0, 0, SW, SH);
+      if (asciiSubMode === 'typo' && _typoReady) _renderTypoSync(_px, SW, SH, asciiCols, false);
+      else _renderASCIISync(_px, SW, SH, _getAsciiEffectiveCols(), false);
     }
     await saveBlob(await _canvasToJpeg(asciiCvs), _flipName('ascii', 'jpg'));
   } else {
@@ -17578,7 +17894,7 @@ document.getElementById('upBtnReset').addEventListener('click', () => {
   acBrightVal=100;acContrastVal=100;acSatVal=100;acHueVal=0;acGrayVal=0;
   acSepiaVal=0;acInvertVal=0;acThreshOn=false;acThreshVal=128;
   acSharpOn=false;acSharpVal=9;acEdgeOn=false;acEdgeVal=10;
-  acGradientVal='normal';acSpaceVal=1;acFrameVal=0;acQualityVal='none';asciiClassicCols=100;asciiTypoCols=_getAsciiDefaultCols('typo');asciiSubMode='classic';asciiCols=asciiClassicCols;
+  acGradientVal='normal';acSpaceVal=1;acFrameVal=0;acQualityVal='none';asciiDensity=375;asciiClassicCols=100;asciiTypoCols=_getAsciiDefaultCols('typo');asciiSubMode='classic';asciiCols=asciiClassicCols;
   typoFontPreset='sans';typoPaletteKey='classic';typoColorMode='tint';typoInkKey='auto';typoPaperKey='auto';asciiInkKey='auto';asciiPaperKey='auto';typoInkCustom='#F4F1E8';typoPaperCustom='#0A0A0A';asciiInkCustom='#F4F1E8';asciiPaperCustom='#0A0A0A';_resetTypoState({ clearStickers:true, closeTray:true, clearSelection:true });
   upExposureVal=0;upShadowsVal=0;upHighlightsVal=0;upDitherIntVal=100;upGrainVal=0;upVignetteVal=0;
   upPalHueVal=0;upMixVal=100;
@@ -17645,14 +17961,16 @@ function _getAsciiCaptureSource() {
   return null;
 }
 function _getAsciiRecordingOptions() {
+  const metrics = asciiSubMode === 'classic' ? _getAsciiDensityMetrics() : { width:asciiCvs.width, height:asciiCvs.height };
   return {
     aspectRatio: _getCurrentAspectId(),
     resolution: flipAudioSettings?.resolution || 'medium',
+    dims: { width:metrics.width, height:metrics.height, aspect:_getCurrentAspectId() },
     renderFrame: ({ ctx, width, height }) => {
-      const captureSource = _getAsciiCaptureSource();
+      const captureSource = asciiSubMode === 'typo' ? _getAsciiCaptureSource() : null;
       if (captureSource) {
         _renderASCIICaptureSync(captureSource.source, captureSource.srcW, captureSource.srcH, captureSource.mirror);
-      } else if ((extAudioMode || extMicOnlyMode) && extAnalyser) {
+      } else if (asciiSubMode === 'typo' && (extAudioMode || extMicOnlyMode) && extAnalyser) {
         const af = _getExtAudioSourceFrame(640, 480);
         renderASCII(af, 640, 480, false);
       }
@@ -17690,7 +18008,14 @@ function bindSlider(id, valId, suffix, getter, setter) {
   });
 }
 
-bindSlider('acChars',   'vChars',   '',   v=>parseInt(v),              v=>{_setAsciiModeCols(v); _syncAsciiColsUI();});
+document.getElementById('acChars').addEventListener('input', e => {
+  asciiDensity = _clampAsciiDensity(e.target.value);
+  asciiClassicCols = _asciiDensityToCols(asciiDensity);
+  asciiCols = asciiClassicCols;
+  _resetAsciiDensityBudget();
+  _syncAsciiColsUI();
+  asciiSettingsChanged();
+});
 bindSlider('acSpace',   'vSpace',   '',   v=>parseInt(v),              v=>{acSpaceVal=v;});
 bindSlider('acFrame',   'vFrame',   'px', v=>parseInt(v),              v=>{acFrameVal=v;});
 bindSlider('acBright',  'vBright',  '%',  v=>parseInt(v),              v=>{acBrightVal=v;});
@@ -17938,7 +18263,7 @@ document.getElementById('acPng').addEventListener('click', async () => {
   await saveBlob(await canvasToBlob(ctxAscii), _flipName('ascii', 'png'));
 });
 document.getElementById('acReset').addEventListener('click', () => {
-  const defs={acChars:100,acSpace:1,acFrame:0,acBright:100,acContrast:100,acSat:100,acHue:0,acGray:0,acSepia:0,acInvert:0,acThresh:128,acSharp:9,acEdge:10};
+  const defs={acChars:375,acSpace:1,acFrame:0,acBright:100,acContrast:100,acSat:100,acHue:0,acGray:0,acSepia:0,acInvert:0,acThresh:128,acSharp:9,acEdge:10};
   const lbls={acChars:['vChars',''],acSpace:['vSpace',''],acFrame:['vFrame','px'],acBright:['vBright','%'],acContrast:['vContrast','%'],acSat:['vSat','%'],acHue:['vHue','°'],acGray:['vGray','%'],acSepia:['vSepia','%'],acInvert:['vInvert','%'],acThresh:['vThresh',''],acSharp:['vSharp',''],acEdge:['vEdge','']};
   Object.entries(defs).forEach(([id,val])=>{
     const el=document.getElementById(id);if(!el)return;
@@ -17946,7 +18271,7 @@ document.getElementById('acReset').addEventListener('click', () => {
     const[lblId,suffix]=lbls[id];
     document.getElementById(lblId).textContent=(id==='acEdge'?(val/10).toFixed(1):val)+suffix;
   });
-  asciiClassicCols=100;asciiTypoCols=_getAsciiDefaultCols('typo');asciiSubMode='classic';asciiCols=asciiClassicCols;acSpaceVal=1;acFrameVal=0;acBrightVal=100;acContrastVal=100;
+  asciiDensity=375;asciiClassicCols=100;asciiTypoCols=_getAsciiDefaultCols('typo');asciiSubMode='classic';asciiCols=asciiClassicCols;acSpaceVal=1;acFrameVal=0;acBrightVal=100;acContrastVal=100;
   acSatVal=100;acHueVal=0;acGrayVal=0;acSepiaVal=0;acInvertVal=0;
   acThreshVal=128;acSharpVal=9;acEdgeVal=1.0;
   acThreshOn=false;acSharpOn=false;acEdgeOn=false;
@@ -18568,7 +18893,7 @@ document.getElementById('sonoHue').addEventListener('input', e => {
 document.getElementById('btnAsciiDefault').addEventListener('click', () => {
   _setAsciiModeCols(_getAsciiDefaultCols());
   const sl = document.getElementById('acChars');
-  if (sl) sl.max = ASCII_DEV_MAX;
+  if (sl) sl.max = ASCII_DENSITY_MAX;
   _syncAsciiColsUI();
   document.getElementById('asciiPerfWarn').style.display = 'none';
   _asciiAdaptiveFpsCap = 0;
@@ -18584,15 +18909,14 @@ _initAsciiWorker();
 // Android: init limits + UI
 if (IS_ANDROID) {
   const sl = document.getElementById('acChars');
-  if (sl) sl.max = ASCII_DEV_MAX;
-  asciiClassicCols = ASCII_ANDROID_DEFAULT;
-  asciiCols = asciiClassicCols;
+  if (sl) sl.max = ASCII_DENSITY_MAX;
+  _setAsciiModeCols(ASCII_ANDROID_DEFAULT, 'classic');
   _syncAsciiColsUI();
   document.getElementById('androidRow').style.display = 'flex';
 } else if (_isMobile) {
-  // Mobile non-Android: allow up to ASCII_DEV_MAX (750)
+  // Mobile accepts the full creative range; the measured guard starts at 480.
   const sl = document.getElementById('acChars');
-  if (sl) sl.max = ASCII_DEV_MAX;
+  if (sl) sl.max = ASCII_DENSITY_MAX;
   const slUp = document.getElementById('upAcChars');
   if (slUp) slUp.max = ASCII_DEV_MAX;
 }
@@ -18607,10 +18931,10 @@ document.getElementById('btnHighPerf').addEventListener('click', () => {
   _asciiLastFT = 0;
   if (asciiHighPerf) {
     const sl = document.getElementById('acChars');
-    if (sl) sl.max = ASCII_DEV_MAX; // unlock slider max
+    if (sl) sl.max = ASCII_DENSITY_MAX;
   } else {
     const sl = document.getElementById('acChars');
-    if (sl) sl.max = ASCII_DEV_MAX;
+    if (sl) sl.max = ASCII_DENSITY_MAX;
     _setAsciiModeCols(Math.min(asciiCols, ASCII_DEV_MAX));
     _syncAsciiColsUI();
   }
@@ -18629,8 +18953,8 @@ document.getElementById('btnSmoothMode').addEventListener('click', () => {
     acQualityVal = 'none'; acGradientVal = 'normal'; acSpaceVal = 1;
     // Update UI
     const slC = document.getElementById('acChars');
-    if (slC) slC.value = optCols;
-    document.getElementById('vChars').textContent = optCols;
+    if (slC) slC.value = asciiSubMode === 'classic' ? _asciiColsToDensity(optCols) : optCols;
+    _syncAsciiColsUI();
     document.getElementById('cbSharp').checked  = false; document.getElementById('acSharp').disabled  = true;
     document.getElementById('cbEdge').checked   = false; document.getElementById('acEdge').disabled   = true;
     document.getElementById('acQuality').value  = 'none';
@@ -21473,7 +21797,7 @@ function _writeSettings() {
       sonoPreset, sonoMixVal, sonoChaosVal,
       wmpPreset: wmpPreset, wmpSensVal, wmpTrailsVal,
       uploadMode,
-      asciiCols, asciiClassicCols, asciiTypoCols, asciiSubMode, typoFontPreset, typoPaletteKey, typoColorMode, typoInkKey, typoPaperKey, asciiInkKey, asciiPaperKey, typoInkCustom, typoPaperCustom, asciiInkCustom, asciiPaperCustom, typoFieldVal, typoPhotoThreshold, typoGyroStrength,
+      asciiCols, asciiDensity, asciiClassicCols, asciiTypoCols, asciiSubMode, typoFontPreset, typoPaletteKey, typoColorMode, typoInkKey, typoPaperKey, asciiInkKey, asciiPaperKey, typoInkCustom, typoPaperCustom, asciiInkCustom, asciiPaperCustom, typoFieldVal, typoPhotoThreshold, typoGyroStrength,
       acGradientVal, acSpaceVal, acQualityVal, acFrameVal,
       acBrightVal, acContrastVal, acSatVal, acHueVal, acGrayVal,
       acSepiaVal, acInvertVal, acThreshOn, acThreshVal,
@@ -21635,8 +21959,14 @@ function loadSettings() {
     // Upload mode
     if (s.uploadMode && s.uploadMode !== 'scrash') { _setUploadMode(s.uploadMode); }
     // ASCII
-    if (s.asciiClassicCols !== undefined) asciiClassicCols = s.asciiClassicCols;
-    if (s.asciiTypoCols !== undefined) asciiTypoCols = s.asciiTypoCols;
+    if (s.asciiDensity !== undefined) {
+      asciiDensity = _clampAsciiDensity(s.asciiDensity);
+      asciiClassicCols = _asciiDensityToCols(asciiDensity);
+    } else if (s.asciiClassicCols !== undefined) {
+      asciiClassicCols = Math.max(20, Math.min(720, Math.round(Number(s.asciiClassicCols) || 100)));
+      asciiDensity = _asciiColsToDensity(asciiClassicCols);
+    }
+    if (s.asciiTypoCols !== undefined) asciiTypoCols = Math.max(16, Math.min(720, Math.round(Number(s.asciiTypoCols) || 96)));
     if (s.asciiSubMode && ['classic','typo'].includes(s.asciiSubMode)) asciiSubMode = s.asciiSubMode;
     asciiSubMode = _readAsciiPresetPreference() || asciiSubMode;
     if (s.typoFontPreset && TYPO_FONTS[s.typoFontPreset]) typoFontPreset = s.typoFontPreset;
@@ -21653,7 +21983,10 @@ function loadSettings() {
     if (s.typoFieldVal !== undefined) typoFieldVal = Math.max(30, Math.min(150, Math.round(s.typoFieldVal)));
     if (s.typoPhotoThreshold !== undefined) typoPhotoThreshold = Math.max(40, Math.min(220, Math.round(s.typoPhotoThreshold)));
     if (s.typoGyroStrength !== undefined) typoGyroStrength = Math.max(10, Math.min(150, Math.round(s.typoGyroStrength)));
-    if (s.asciiCols !== undefined && s.asciiClassicCols === undefined) asciiClassicCols = s.asciiCols;
+    if (s.asciiCols !== undefined && s.asciiClassicCols === undefined && s.asciiDensity === undefined) {
+      asciiClassicCols = Math.max(20, Math.min(720, Math.round(Number(s.asciiCols) || 100)));
+      asciiDensity = _asciiColsToDensity(asciiClassicCols);
+    }
     _applyAsciiPresetPreference(asciiSubMode);
     _writeAsciiPresetPreference(asciiSubMode);
     _syncTypoCamUI();
@@ -23298,7 +23631,7 @@ function _editClampGlitchParams(p) {
 function _editClampAsciiParams(p) {
   const d = _editDefaultAsciiParams();
   if (!p || typeof p !== 'object') return d;
-  const cols = (typeof p.cols === 'number' && isFinite(p.cols)) ? Math.max(20, Math.min(160, p.cols)) : d.cols;
+  const cols = (typeof p.cols === 'number' && isFinite(p.cols)) ? Math.max(20, Math.min(720, Math.round(p.cols))) : d.cols;
   return {
     cols,
     ink: (p.ink && p.ink in TYPO_INKS) ? p.ink : d.ink,
@@ -23363,9 +23696,10 @@ function _editAsciiPanelHtml(i, step) {
   const pill = (group, key, label, val) =>
     `<button class="edit-fam-pill${p[key] === val ? ' active' : ''}" data-i="${i}" data-act="set${group}" data-val="${val}">${label}</button>`;
   return `<div class="edit-ascii-panel" data-i="${i}">` +
-    `<div class="edit-mini-row full"><span class="emr-lbl">COLS</span>` +
-    `<input type="range" data-ascii-param="cols" min="20" max="160" step="1" value="${p.cols}">` +
-    `<span class="emr-val" data-ascii-val="cols">${p.cols}</span></div>` +
+    `<div class="edit-mini-row full ascii-density-row"><span class="emr-lbl">DENSITY</span>` +
+    `<input type="range" data-ascii-param="cols" min="0" max="1000" step="1" value="${_asciiColsToDensity(p.cols)}">` +
+    `<span class="emr-val" data-ascii-val="cols">${_formatAsciiDensity(p.cols)}</span>` +
+    `<div class="ascii-density-zones" aria-hidden="true"><span>GRUESO</span><span>FINO</span><span>SELLO</span></div></div>` +
     `<div class="edit-mini-row full"><span class="emr-lbl">INK</span></div>` +
     `<div class="edit-fam-panel" style="margin-bottom:6px">${Object.keys(TYPO_INKS).map(k => pill('ink', 'ink', k.toUpperCase(), k)).join('')}</div>` +
     `<div class="edit-mini-row full"><span class="emr-lbl">PAPER</span></div>` +
@@ -23637,11 +23971,11 @@ function _editLoop(ts) {
       const i = _editExpandedPanel ? _editExpandedPanel.i : null;
       if (i == null || !editSteps[i] || editSteps[i].engine !== 'ascii') return;
       const param = asciiEl.dataset.asciiParam;
-      const v = +asciiEl.value;
+      const v = param === 'cols' ? _asciiDensityToCols(asciiEl.value) : +asciiEl.value;
       if (!editSteps[i].params) editSteps[i].params = _editDefaultAsciiParams();
       editSteps[i].params[param] = v;
       const valEl = e.currentTarget.querySelector(`[data-ascii-val="${param}"]`);
-      if (valEl) valEl.textContent = v;
+      if (valEl) valEl.textContent = param === 'cols' ? _formatAsciiDensity(v) : v;
       saveSettings();
     }
   });
@@ -24127,11 +24461,11 @@ function _stagePipelineForRender(state) {
       const step = i == null ? null : _stageCtlState.pipeline[i];
       if (!step || step.engine !== 'ascii') return;
       const param = asciiEl.dataset.asciiParam;
-      const value = +asciiEl.value;
+      const value = param === 'cols' ? _asciiDensityToCols(asciiEl.value) : +asciiEl.value;
       if (!step.params) step.params = _editDefaultAsciiParams();
       step.params[param] = value;
       const valueEl = stageLayersList.querySelector(`[data-ascii-val="${param}"]`);
-      if (valueEl) valueEl.textContent = value;
+      if (valueEl) valueEl.textContent = param === 'cols' ? _formatAsciiDensity(value) : value;
       _stageCommit();
     }
   });
