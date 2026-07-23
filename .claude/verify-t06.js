@@ -467,11 +467,13 @@ async function main() {
   assert(duplicateIds.length === 0, `IDs duplicados: ${duplicateIds.join(', ')}`);
   assert(missingIds.length === 0, `getElementById rotos: ${missingIds.join(', ')}`);
 
-  const server = spawn(process.execPath, [path.join(ROOT, '.claude/serve.js')], { cwd:ROOT, stdio:'ignore' });
+  const server = process.env.T06_BASE_URL
+    ? null
+    : spawn(process.execPath, [path.join(ROOT, '.claude/serve.js')], { cwd:ROOT, stdio:'ignore' });
   let serverExit = null;
-  server.once('exit', (code, signal) => { serverExit = { code, signal }; });
+  server?.once('exit', (code, signal) => { serverExit = { code, signal }; });
   let testUrl = BASE_URL;
-  let serverMode = 'http:8742';
+  let serverMode = process.env.T06_BASE_URL ? `external:${BASE_URL}` : 'http:8742';
   let serverReady = false;
   for (let attempt = 0; attempt < 40 && !serverReady && !serverExit; attempt++) {
     try {
@@ -509,7 +511,7 @@ async function main() {
   const cleanup = () => {
     page.close(); browser.close();
     if (!chrome.killed) chrome.kill('SIGTERM');
-    if (!server.killed && !serverExit) server.kill('SIGTERM');
+    if (server && !server.killed && !serverExit) server.kill('SIGTERM');
     try { fs.rmSync(profileDir, { recursive:true, force:true }); } catch (_) {}
     try { fs.rmSync(checkDir, { recursive:true, force:true }); } catch (_) {}
     try { fs.rmSync(mediaDir, { recursive:true, force:true }); } catch (_) {}

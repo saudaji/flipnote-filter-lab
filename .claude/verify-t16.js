@@ -902,7 +902,7 @@ async function main() {
   assert(duplicateIds.length === 0, `ids duplicados=${JSON.stringify(duplicateIds)}`);
   assert(missingStaticRefs.length === 0, `refs sin id=${JSON.stringify(missingStaticRefs)}`);
   assert(
-    /const CACHE = 'flipnote-filter-lab-v89-ascii-atlas'/.test(fs.readFileSync(path.join(DOCS, 'sw.js'), 'utf8')),
+    /const CACHE = 'flipnote-filter-lab-v93-ascii-sello'/.test(fs.readFileSync(path.join(DOCS, 'sw.js'), 'utf8')),
     'docs/sw.js no conserva el CACHE baseline de T16'
   );
 
