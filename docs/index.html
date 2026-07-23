@@ -5656,6 +5656,7 @@ function _syncCamPanels() {
   document.getElementById('camControlDock').classList.toggle('visible', isCam);
   document.getElementById('camFamilyTray').classList.toggle('visible', isCam && camFamilyTrayOpen);
   _syncCamMobileUtilityDock();
+  queueMicrotask(_syncAudioLevelMeter);
 }
 function _syncCamThemeClasses() {
   const isCam = _getSafeActiveTab() === 'cam';
@@ -13329,8 +13330,16 @@ function _waitForVideoReady(videoEl, timeoutMs = 2600) {
 }
 
 async function startCamera(facing) {
+  const videoConstraints = FLIP_IS_MOBILE()
+    ? {
+        facingMode:facing,
+        width:{ideal:640},
+        height:{ideal:480},
+        frameRate:{ideal:24, max:30},
+      }
+    : { facingMode:facing, width:{ideal:1280}, height:{ideal:720} };
   const nextStream = await navigator.mediaDevices.getUserMedia({
-    video:{ facingMode:facing, width:{ideal:1280}, height:{ideal:720} }, audio:false,
+    video:videoConstraints, audio:false,
   });
   const prevStream = stream;
   stream = nextStream;
@@ -13346,6 +13355,9 @@ async function startCamera(facing) {
     await _waitForVideoReady(vid);
   } catch (err) {
     try { nextStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    // A tab/mode switch may have intentionally released this request while metadata
+    // was still pending. Do not restore its predecessor or surface a false camera error.
+    if (stream !== nextStream) return false;
     if (prevStream) {
       stream = prevStream;
       vid.srcObject = prevStream;
@@ -13359,11 +13371,27 @@ async function startCamera(facing) {
     }
     throw err;
   }
+  if (stream !== nextStream) {
+    try { nextStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+    return false;
+  }
   if (prevStream) {
     try { prevStream.getTracks().forEach(t => t.stop()); } catch (_) {}
   }
   _refreshCamZoomSupport(nextStream.getVideoTracks()[0] || null);
   _resetCamEngineState('preview');
+  return true;
+}
+
+function _stopGlobalCamera() {
+  const previous = stream;
+  stream = null;
+  if (vid.srcObject === previous) vid.srcObject = null;
+  if (previous) {
+    try { previous.getVideoTracks().forEach(track => track.stop()); } catch (_) {}
+  }
+  _clearCamZoomSupport();
+  _syncCamZoomUI();
 }
 
 function _toggleCamera() {
@@ -13683,11 +13711,63 @@ let extInGainVal = (function(){
   return (isFinite(saved) && saved > 0) ? saved : 3;
 })();
 
-// F4 — backup resume() for when nothing is polling FlipAudioReact.read() at the moment
-// iOS re-suspends the AudioContext (e.g. mic-only mode with no visual loop running).
+const _visibilityDisabledVideoTracks = new Set();
+const _visibilitySuspendedAudioContexts = new Set();
+
+function _setVisibilityVideoEnabled(enabled) {
+  if (!enabled) {
+    if (stream) {
+      stream.getVideoTracks().forEach(track => {
+        if (track.readyState === 'live' && track.enabled) {
+          track.enabled = false;
+          _visibilityDisabledVideoTracks.add(track);
+        }
+      });
+    }
+    window._sflowSetVideoEnabled?.(false);
+    window._stageOutSetVideoEnabled?.(false);
+    return;
+  }
+  _visibilityDisabledVideoTracks.forEach(track => {
+    if (track.readyState === 'live') track.enabled = true;
+  });
+  _visibilityDisabledVideoTracks.clear();
+  window._sflowSetVideoEnabled?.(true);
+  window._stageOutSetVideoEnabled?.(true);
+}
+
+function _suspendAudioContextForVisibility(ctx) {
+  if (!ctx || ctx.state !== 'running') return;
+  _visibilitySuspendedAudioContexts.add(ctx);
+  ctx.suspend().catch(() => _visibilitySuspendedAudioContexts.delete(ctx));
+}
+
+function _restoreVisibilityAudioContexts() {
+  _visibilitySuspendedAudioContexts.forEach(ctx => {
+    if (ctx.state !== 'closed') ctx.resume().catch(() => {});
+  });
+  _visibilitySuspendedAudioContexts.clear();
+}
+
+// Thermal background policy. Media playback keeps sounding deliberately; capture and
+// analysis contexts sleep. An active REC is a hard exception: none of its resources move.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && extAudioCtx && extAudioCtx.state === 'suspended') {
-    extAudioCtx.resume().catch(()=>{});
+  if (_hasActiveFlipRecording()) return;
+  if (document.hidden) {
+    _setVisibilityVideoEnabled(false);
+    _stopAudioLevelMeter();
+    _suspendAudioContextForVisibility(extAudioCtx);
+    _suspendAudioContextForVisibility(flipAudioEngine?.ctx);
+    if (!(sonoFileLoaded && sonoAudioEl.src && !sonoAudioEl.paused)) {
+      _suspendAudioContextForVisibility(sonoAudioCtx);
+    }
+    if (!(wmpAudioEl?.src && !wmpAudioEl.paused)) {
+      _suspendAudioContextForVisibility(wmpAudioCtx);
+    }
+  } else {
+    _setVisibilityVideoEnabled(true);
+    _restoreVisibilityAudioContexts();
+    _syncAudioLevelMeter();
   }
 });
 
@@ -13859,7 +13939,11 @@ function cameraLoop(t) {
           _pipeTestSteps,
           srcCanvas,
           ctxD,
-          _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser),
+          _readFlipAudioSnapshot(
+            (extAudioMode || extMicOnlyMode) && !!extAnalyser &&
+              _pipelineConsumesFlipAudio(_pipeTestSteps),
+            t
+          ),
           t
         );
       }
@@ -14370,6 +14454,7 @@ function _syncScrashHudVisibility() {
   document.documentElement.style.setProperty('--scrash-stack-bottom', `${stackBottom}px`);
   // Re-fit canvas after sidebar/panel state changes (sidebar on desktop changes available width)
   window._scrashResizeCanvas?.();
+  queueMicrotask(_syncAudioLevelMeter);
 }
 
 function switchTab(tab) {
@@ -14395,6 +14480,9 @@ function switchTab(tab) {
   const isSflow = tab==='sflow';
   const isEdit = tab==='edit';
   const isStage = tab==='stage';
+  const usesGlobalCamera = isCam || isAscii || isScrash || isFusion ||
+    (isEdit && editSource.type === 'cam');
+  if (!usesGlobalCamera) _stopGlobalCamera();
   if (!isAscii) _resetTypoTransient(false);
   if (!isAscii) asciiRecordingHighQuality = false;
   display.style.display = isCam ? 'block' : 'none';
@@ -14472,7 +14560,7 @@ function switchTab(tab) {
   }
   if (!isSono) stopSono();
   if (isSono)  enterSono();
-  if (!isWmp)  wmpPauseLoop(); // pause render; keep audio context alive
+  if (!isWmp)  stopWmp();
   if (isWmp)   enterWmp();
   if (!isScrash) exitScrash();
   if (isScrash)  enterScrash();
@@ -14499,12 +14587,31 @@ function switchTab(tab) {
   cameraRunning = isCam; asciiRunning = isAscii;
   // Restart camera if it was stopped by a file upload
   if (isCam || isAscii || isScrash || isFusion) inputMode = 'camera';
-  if ((isCam || isAscii || isScrash || isFusion) && !stream && !extAudioMode) startCamera(facingMode).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+  if ((isCam || isAscii || isScrash || isFusion) && !stream && !extAudioMode) {
+    startCamera(facingMode).then(started => {
+      if (!started || !stream) return;
+      const currentUsesCamera = activeTab === 'cam' || activeTab === 'ascii' ||
+        activeTab === 'scrash' || activeTab === 'fusion' ||
+        (activeTab === 'edit' && editSource.type === 'cam');
+      if (!currentUsesCamera) {
+        _stopGlobalCamera();
+        return;
+      }
+      if (activeTab === 'cam' && cameraRunning && !_camLoopAlive) requestAnimationFrame(cameraLoop);
+      else if (activeTab === 'ascii' && asciiRunning && !_asciiLoopAlive) requestAnimationFrame(asciiLoop);
+      else if (activeTab === 'scrash' && scrashRunning && !_scrashLoopAlive && !_scrRafId) {
+        _scrRafId = requestAnimationFrame(_scrashLoop);
+      } else if (activeTab === 'fusion' && fusionRunning && !_fusionLoopAlive) {
+        requestAnimationFrame(_fusionLoop);
+      }
+    }).catch(err => flipToast('⚠ ' + (err?.message || 'Camera failed')));
+  }
   // F5 — paridad móvil: extMicOnlyMode también cuenta como fuente para arrancar estos loops
   // (además de la cámara real o EXT AUDIO clásico de desktop).
   if (isCam && !_camLoopAlive && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser))) requestAnimationFrame(cameraLoop);
   if (isAscii && !_asciiLoopAlive && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser) || asciiStaticSrc)) requestAnimationFrame(asciiLoop);
   if (isFusion && !_fusionLoopAlive && (stream || ((extAudioMode || extMicOnlyMode) && extAnalyser))) requestAnimationFrame(_fusionLoop);
+  _syncAudioLevelMeter();
 }
 
 document.getElementById('tabCam'  ).addEventListener('click', () => switchTab('cam'));
@@ -15812,6 +15919,14 @@ class FlipAudioEngine {
     return true;
   }
   stopAfterRecording() {
+    if (this.micStream) {
+      try { this.micStream.getTracks().forEach(track => track.stop()); } catch (_) {}
+      this.micStream = null;
+    }
+    if (this.sourceNode) {
+      try { this.sourceNode.disconnect(); } catch (_) {}
+      this.sourceNode = null;
+    }
     if (!this.ctx) return;
     this.state = this.isInitialized ? 'READY' : 'IDLE';
     if (this.ownsContext && !this.monitorConnected && this.ctx.state === 'running') {
@@ -15989,10 +16104,36 @@ const FlipAudioReact = {
 };
 
 const FLIP_AUDIO_SILENCE = Object.freeze({ bass: 0, mid: 0, treble: 0, rms: 0, transient: 0 });
-function _readFlipAudioSnapshot(enabled = true) {
+let _flipAudioSnapshotFrameTs = null;
+let _flipAudioSnapshotMemo = null;
+let _flipAudioSnapshotAnalyser = null;
+function _pipelineConsumesFlipAudio(steps) {
+  return (steps || []).some(step => {
+    if (!step || step.on === false) return false;
+    if (step.engine === 'flowblob') return true;
+    if (step.engine === 'vhs') return (step.params?.intensity ?? 50) > 0;
+    if (step.engine !== 'glitch') return false;
+    const params = step.params?.glitch || step.params || {};
+    return (params.audioReact ?? scrAudioReactVal) > 0;
+  });
+}
+function _readFlipAudioSnapshot(enabled = true, frameTs = performance.now()) {
   if (!enabled) return null;
+  if (_flipAudioSnapshotFrameTs === frameTs && _flipAudioSnapshotMemo &&
+      _flipAudioSnapshotAnalyser === FlipAudioReact._analyser) {
+    return _flipAudioSnapshotMemo;
+  }
   const a = FlipAudioReact.read();
-  return Object.freeze({ bass: a.bass, mid: a.mid, treble: a.treble, rms: a.rms, transient: a.transient });
+  _flipAudioSnapshotFrameTs = frameTs;
+  _flipAudioSnapshotAnalyser = FlipAudioReact._analyser;
+  _flipAudioSnapshotMemo = Object.freeze({
+    bass:a.bass,
+    mid:a.mid,
+    treble:a.treble,
+    rms:a.rms,
+    transient:a.transient,
+  });
+  return _flipAudioSnapshotMemo;
 }
 
 function createCombinedStream(canvasStream, audioEngine) {
@@ -16726,6 +16867,7 @@ _normalizeScrashHudDom();
 document.getElementById('btnAsciiEdit').addEventListener('click', () => {
   asciiPanelOpen = !asciiPanelOpen;
   document.body.classList.toggle('ascii-edit', asciiPanelOpen);
+  _syncAudioLevelMeter();
   relayout();
   asciiSettingsChanged();
 });
@@ -16735,6 +16877,7 @@ document.getElementById('asciiCanvasCol').addEventListener('click', () => {
   if (asciiPanelOpen && FLIP_IS_MOBILE()) {
     asciiPanelOpen = false;
     document.body.classList.remove('ascii-edit');
+    _syncAudioLevelMeter();
     relayout();
   }
 });
@@ -17775,6 +17918,7 @@ function renderUploadPreview() {
 // EDIT panel toggle
 document.getElementById('btnUpEdit').addEventListener('click', () => {
   document.body.classList.toggle('up-edit-open');
+  _syncAudioLevelMeter();
   _syncUploadPanelLayout();
 });
 
@@ -19311,11 +19455,13 @@ function wmpDrawFog(preset, mixT, preset2) {
 // ── Audio setup ───────────────────────────────────────────────────────
 async function wmpStopAudio() {
   wmpRunning = false;
+  const closingCtx = wmpAudioCtx;
+  wmpAudioCtx = null;
+  wmpAnalyser = null;
   if (wmpMicStream) { wmpMicStream.getTracks().forEach(t => t.stop()); wmpMicStream = null; }
   if (wmpAudioEl)   { wmpAudioEl.pause(); wmpAudioEl.removeAttribute('src'); }
   if (wmpAudioSrc)  { try { wmpAudioSrc.disconnect(); } catch(_){} wmpAudioSrc = null; }
-  if (wmpAudioCtx)  { await wmpAudioCtx.close().catch(()=>{}); wmpAudioCtx = null; }
-  wmpAnalyser = null;
+  if (closingCtx) await closingCtx.close().catch(()=>{});
   document.body.classList.remove('wmp-file');
   window._wmpSyncHudLayout();
   if (wmpFileUrl) { URL.revokeObjectURL(wmpFileUrl); wmpFileUrl = null; }
@@ -19377,11 +19523,12 @@ async function wmpLoadFile(file) {
 }
 
 function wmpPauseLoop() {
-  // Pause render loop without destroying audio — keeps analyser and stream alive
+  // File playback keeps its analyser/context alive; mic capture is torn down by stopWmp().
   wmpRunning = false;
 }
 function stopWmp() {
-  wmpStopAudio(); // full teardown (called only on explicit user action)
+  wmpPauseLoop();
+  if (wmpMicStream) wmpStopAudio();
 }
 function enterWmp() {
   if ((extAudioMode || extMicOnlyMode) && extAnalyser) {
@@ -20361,25 +20508,62 @@ function _extShowErr(msg) {
   el.textContent = msg; el.style.display = msg ? 'block' : 'none';
 }
 
-function _extStartLevelMeter() {
+function _isMicLevelButtonVisible() {
+  const btn = document.getElementById('btnMicMobile');
+  if (!btn || !btn.getClientRects().length) return false;
+  const style = getComputedStyle(btn);
+  return style.display !== 'none' && style.visibility !== 'hidden' &&
+    Number.parseFloat(style.opacity || '1') > 0.01;
+}
+
+function _stopAudioLevelMeter() {
   if (_extLevelTimer) clearInterval(_extLevelTimer);
+  _extLevelTimer = null;
+}
+
+function _syncAudioLevelMeter() {
+  const panel = document.getElementById('audioIOPanel');
+  const panelOpen = !!panel?.classList.contains('open');
+  const micButtonVisible = _isMicLevelButtonVisible();
   const bar = document.getElementById('extLevelBar');
   const val = document.getElementById('extLevelVal');
   const wrap = document.getElementById('extLevelWrap');
-  if (wrap) wrap.style.display = 'block';
-  const buf = new Uint8Array(extAnalyser.frequencyBinCount);
+  if (wrap) wrap.style.display = panelOpen && extAnalyser ? 'block' : 'none';
+  const shouldRun = !document.hidden && !!extAnalyser && (panelOpen || micButtonVisible);
+  if (!shouldRun) {
+    _stopAudioLevelMeter();
+    return;
+  }
+  if (_extLevelTimer) return;
   _extLevelTimer = setInterval(() => {
-    if (!extAnalyser) { clearInterval(_extLevelTimer); return; }
-    extAnalyser.getByteFrequencyData(buf);
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i];
-    const avg = sum / buf.length;
-    const pct = Math.min(100, (avg / 128) * 200); // scale 0-100
-    const db  = avg > 0 ? (20 * Math.log10(avg / 128)).toFixed(1) : '-∞';
-    if (bar) bar.style.width = pct + '%';
+    if (!extAnalyser || document.hidden ||
+        !(document.getElementById('audioIOPanel')?.classList.contains('open') ||
+          _isMicLevelButtonVisible())) {
+      _syncAudioLevelMeter();
+      return;
+    }
+    const rms = FlipAudioReact.read().rms || 0;
+    const pct = Math.min(100, rms * 300);
+    const db = rms > 0 ? (20 * Math.log10(rms)).toFixed(1) : '-∞';
+    if (bar) bar.style.width = pct.toFixed(1) + '%';
     if (val) val.textContent = db + ' dB';
-    console.log('[ExtAudio] level:', pct.toFixed(1) + '% avg:', avg.toFixed(2), 'dB:', db);
-  }, 100);
+    const btn = document.getElementById('btnMicMobile');
+    if (extMicOnlyMode && _isMicLevelButtonVisible() && btn) {
+      btn.style.setProperty('--mic-level', Math.max(0, Math.min(1, rms * 3)).toFixed(3));
+      const elapsed = performance.now() - _micLevelStartT;
+      if (!_micNoSignalWarned && elapsed > 3000) {
+        _micNoSignalWarned = true;
+        if (rms < 0.01) {
+          btn.textContent = '🎙⚠';
+          flipToast('🎙 sin señal — revisa permisos o sube SENSIBILIDAD');
+        }
+      }
+    }
+  }, 150);
+}
+
+function _extStartLevelMeter() {
+  _syncAudioLevelMeter();
 }
 
 // F4 — Cadena de audio compartida: getUserMedia(audio) → AudioContext → gain (sensibilidad) →
@@ -20417,6 +20601,7 @@ async function _clearExtAudioChain() {
   extTransientAnalyser = null;
   extInGainNode = null;
   FlipAudioReact.attach(null);
+  _stopAudioLevelMeter();
   await _releaseExtAudioResources(oldStream, oldCtx);
 }
 
@@ -20558,7 +20743,7 @@ async function stopExtAudio() {
     if (!isCurrent()) return false;
     extAudioMode = false;
     extMicOnlyMode = false;
-    if (_extLevelTimer) { clearInterval(_extLevelTimer); _extLevelTimer = null; }
+    _stopAudioLevelMeter();
     const wrap = document.getElementById('extLevelWrap');
     if (wrap) wrap.style.display = 'none';
     const bar = document.getElementById('extLevelBar');
@@ -20761,37 +20946,20 @@ async function stopMicOnly() {
 }
 
 // ── F4 — feedback visual de nivel en el botón #btnMicMobile ─────────────────
-// Mientras extMicOnlyMode está activo: lee FlipAudioReact.read().rms cada ~150ms y lo
-// expone como --mic-level (CSS anima el glow). Si a los ~3s sigue en ~0, marca "sin señal".
-let _micLevelTimer = null;
+// Comparte el único timer de 150ms con el medidor del panel AUDIO.
 let _micLevelStartT = 0;
 let _micNoSignalWarned = false;
 
 function _startMicLevelFeedback() {
-  _stopMicLevelFeedback();
   const btn = document.getElementById('btnMicMobile');
   if (!btn) return;
   _micLevelStartT = performance.now();
   _micNoSignalWarned = false;
-  _micLevelTimer = setInterval(() => {
-    if (!extMicOnlyMode || !extAnalyser) { _stopMicLevelFeedback(); return; }
-    const rms = FlipAudioReact.read().rms || 0;
-    btn.style.setProperty('--mic-level', Math.max(0, Math.min(1, rms * 3)).toFixed(3));
-    const elapsed = performance.now() - _micLevelStartT;
-    if (!_micNoSignalWarned && elapsed > 3000) {
-      if (rms < 0.01) {
-        _micNoSignalWarned = true;
-        btn.textContent = '🎙⚠';
-        flipToast('🎙 sin señal — revisa permisos o sube SENSIBILIDAD');
-      } else {
-        _micNoSignalWarned = true; // señal detectada al menos una vez, no repetir el chequeo
-      }
-    }
-  }, 150);
+  _syncAudioLevelMeter();
 }
 
 function _stopMicLevelFeedback() {
-  if (_micLevelTimer) { clearInterval(_micLevelTimer); _micLevelTimer = null; }
+  _stopAudioLevelMeter();
   const btn = document.getElementById('btnMicMobile');
   if (btn) {
     btn.style.removeProperty('--mic-level');
@@ -21698,7 +21866,11 @@ function _scrashLoop(ts) {
   if (ts - _scrashLastFrameMs >= minInterval) {
     const t = _rigSeconds(ts);
     const SW = scrashCvs.width, SH = scrashCvs.height;
-    const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
+    const audio = _readFlipAudioSnapshot(
+      (extAudioMode || extMicOnlyMode) && !!extAnalyser &&
+        ((_scrTabLayerParams.audioReact ?? scrAudioReactVal) > 0 || !vid.videoWidth),
+      ts
+    );
 
     if (vid.videoWidth) {
       // Draw video fitting the canvas (letterbox — show full image, no crop)
@@ -22125,13 +22297,14 @@ window._syncExtAudioToggleUI = _syncExtAudioToggleUI;
       // #btnMicMobile button) before the panel was opened.
       _syncExtAudioToggleUI();
     }
+    _syncAudioLevelMeter();
   });
 
   document.getElementById('btnExtAudioToggle').addEventListener('click', async () => {
     if (_isMobileAudioUI()) {
       if (extMicOnlyMode) {
         await stopMicOnly();
-        if (_extLevelTimer) { clearInterval(_extLevelTimer); _extLevelTimer = null; }
+        _stopAudioLevelMeter();
         const wrap = document.getElementById('extLevelWrap');
         if (wrap) wrap.style.display = 'none';
         const bar = document.getElementById('extLevelBar');
@@ -22195,6 +22368,7 @@ window._syncExtAudioToggleUI = _syncExtAudioToggleUI;
       if (extAudioMode) stopExtAudio();
     }
     _syncExtAudioToggleUI();
+    _syncAudioLevelMeter();
   });
 
   _syncExtAudioToggleUI();
@@ -22268,7 +22442,7 @@ if (!FLIP_IS_MOBILE()) {
     if (_micLPFired) { _micLPFired = false; e.preventDefault(); return; } // consumed by long-press
     if (extMicOnlyMode) {
       await stopMicOnly();
-      if (_extLevelTimer) { clearInterval(_extLevelTimer); _extLevelTimer = null; }
+      _stopAudioLevelMeter();
       const wrap = document.getElementById('extLevelWrap');
       if (wrap) wrap.style.display = 'none';
       const bar = document.getElementById('extLevelBar');
@@ -22318,6 +22492,7 @@ if (!FLIP_IS_MOBILE()) {
   let _sfAudioStartT   = 0;
   let _sfFreqData      = null;
   let _sfMaskSmooth    = null;   // persistent Float32Array — temporal smoothing of the raw mask (anti-snapping)
+  let _sfVisibilityDisabledTracks = [];
   const _sfEff = { density: window._sfParams.density, fill: window._sfParams.fill, thresh: window._sfParams.thresh, dim: window._sfParams.dim, trail: window._sfParams.trail }; // eased param values (lerp target = SFP)
 
   const SF_AURA_DEPTH  = { s: 6, m: 12, l: 22 };
@@ -22666,7 +22841,7 @@ if (!FLIP_IS_MOBILE()) {
   window._sfStepHelpers = { audioMask: _sfAudioMask, buildVectors: _sfBuildVectors, chars: SF_CHARS, auraDepth: SF_AURA_DEPTH };
 
   // ── RAF sub-loop: audio-driven render (no camera / no segmenter) ────
-  async function _sfLoopAudio() {
+  async function _sfLoopAudio(frameTs) {
     const CW = sfCanvas.width, CH = sfCanvas.height;
     if (!CW || !CH) return;
     if (!extAnalyser) return;
@@ -22692,7 +22867,7 @@ if (!FLIP_IS_MOBILE()) {
       inkHex = SF_COLOR_MAP[_sfColorKey] || '#ffffff';
     }
 
-    const _sfRms = FlipAudioReact.read().rms;
+    const _sfRms = _readFlipAudioSnapshot(true, frameTs)?.rms || 0;
 
     // ── Clear: subtle radial glow tinted with ink colour instead of flat
     // black, breathing with rms — keeps the frame from reading as dead.
@@ -22827,11 +23002,11 @@ if (!FLIP_IS_MOBILE()) {
   }
 
   // ── RAF render loop ─────────────────────────────────────────────────
-  async function _sfLoop() {
+  async function _sfLoop(frameTs) {
     if (!_sfActive) return;
     _sfRafId = requestAnimationFrame(_sfLoop);
 
-    if (_sfMode === 'audio') { await _sfLoopAudio(); return; }
+    if (_sfMode === 'audio') { await _sfLoopAudio(frameTs); return; }
 
     if (!sfVid.videoWidth || sfVid.readyState < 2) return;
 
@@ -22908,7 +23083,7 @@ if (!FLIP_IS_MOBILE()) {
     sfCtx.textAlign = 'center';
     sfCtx.textBaseline = 'middle';
 
-    const _sfRms     = FlipAudioReact.read().rms;
+    const _sfRms     = _readFlipAudioSnapshot(!!extAnalyser, frameTs)?.rms || 0;
     const _sfThresh   = _sfEff.thresh / 100;
     const _sfFillMul  = _sfEff.fill / 40;
 
@@ -23120,6 +23295,19 @@ if (!FLIP_IS_MOBILE()) {
   // kills it after a second getUserMedia(audio) call (see F4 mic móvil).
   window._sflowRestartCam = function() {
     if (_sfActive && _sfMode === 'cam') { _sfStart(_sfFacing); }
+  };
+  window._sflowSetVideoEnabled = function(enabled) {
+    if (!enabled) {
+      _sfVisibilityDisabledTracks = (_sfStream?.getVideoTracks() || []).filter(track => (
+        track.readyState === 'live' && track.enabled
+      ));
+      _sfVisibilityDisabledTracks.forEach(track => { track.enabled = false; });
+      return;
+    }
+    _sfVisibilityDisabledTracks.forEach(track => {
+      if (track.readyState === 'live') track.enabled = true;
+    });
+    _sfVisibilityDisabledTracks = [];
   };
 
   // ── Stop (exposed globally so switchTab can call it) ────────────────
@@ -23420,7 +23608,11 @@ function _fusionLoop(ts) {
         srcCanvas,
         ctxFusion,
         // F4: en móvil el MIC modula FUSION sin reemplazar la cámara (extMicOnlyMode).
-        _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser),
+        _readFlipAudioSnapshot(
+          (extAudioMode || extMicOnlyMode) && !!extAnalyser &&
+            _pipelineConsumesFlipAudio(_fusionPipelineSteps),
+          ts
+        ),
         ts
       );
     }
@@ -23854,10 +24046,17 @@ function _editLoop(ts) {
   _editLoopAlive = true;
   const minInterval = 1000 / 30;
   if (ts - _editLastFrameMs >= minInterval) {
-    const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
+    const steps = editSteps
+      .filter(step => step.on)
+      .map(step => ({ engine:step.engine, params:_editStepParams(step) }));
+    const sourceConsumesAudio = editSource.type === 'audio' || editSource.type === 'sono';
+    const audio = _readFlipAudioSnapshot(
+      (extAudioMode || extMicOnlyMode) && !!extAnalyser &&
+        (sourceConsumesAudio || _pipelineConsumesFlipAudio(steps)),
+      ts
+    );
     const srcCanvas = _editGetSrcCanvas(audio, ts);
     if (srcCanvas) {
-      const steps = editSteps.filter(s => s.on).map(s => ({ engine: s.engine, params: _editStepParams(s) }));
       runPipeline(steps, srcCanvas, ctxEdit, audio, ts);
     }
     _editLastFrameMs = ts;
@@ -24612,9 +24811,14 @@ function _stagePipelineForRender(state) {
     if (!_stagePreviewRunning) return;
     const minInterval = 1000 / 30;
     if (ctxStagePreview && ts - _stagePreviewLastFrameMs >= minInterval) {
-      const audio = _readFlipAudioSnapshot((extAudioMode || extMicOnlyMode) && !!extAnalyser);
+      const steps = _stagePipelineForRender(_stageCtlState);
+      const audio = _readFlipAudioSnapshot(
+        (extAudioMode || extMicOnlyMode) && !!extAnalyser &&
+          (_stageCtlState.source.audioMode !== 'off' || _pipelineConsumesFlipAudio(steps)),
+        ts
+      );
       const src = _stagePreviewGetSrc(320, 240, ts, audio);
-      runPipeline(_stagePipelineForRender(_stageCtlState), src, ctxStagePreview, audio, ts);
+      runPipeline(steps, src, ctxStagePreview, audio, ts);
       _stagePreviewLastFrameMs = ts;
     }
     requestAnimationFrame(_stagePreviewLoop);
@@ -24787,6 +24991,7 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
   outVideo.style.display = 'none';
   document.body.appendChild(outVideo);
   let _outCamStream = null;
+  let _outVisibilityDisabledTracks = [];
   let _outCamDesired = null, _outCamApplied = null;
   let _outCamQueue = Promise.resolve();
   async function _outEnsureCam(want) {
@@ -24823,6 +25028,19 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
     }).catch(err => _outReportError('CAM_QUEUE_FAILED', err, 'Falló la cola de cámara'));
     return _outCamQueue;
   }
+  window._stageOutSetVideoEnabled = function(enabled) {
+    if (!enabled) {
+      _outVisibilityDisabledTracks = (_outCamStream?.getVideoTracks() || []).filter(track => (
+        track.readyState === 'live' && track.enabled
+      ));
+      _outVisibilityDisabledTracks.forEach(track => { track.enabled = false; });
+      return;
+    }
+    _outVisibilityDisabledTracks.forEach(track => {
+      if (track.readyState === 'live') track.enabled = true;
+    });
+    _outVisibilityDisabledTracks = [];
+  };
 
   let _outAudioDesired = null, _outAudioApplied = null;
   let _outAudioQueue = Promise.resolve();
@@ -24912,8 +25130,13 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
     const t0 = performance.now();
     const srcCanvas = _outGetSrcCanvas();
     if (srcCanvas) {
-      const audio = _readFlipAudioSnapshot(!!extAnalyser);
-      runPipeline(_stagePipelineForRender(state), srcCanvas, ctxOut, audio, ts);
+      const steps = _stagePipelineForRender(state);
+      const audio = _readFlipAudioSnapshot(
+        !!extAnalyser &&
+          (state.source.audioMode !== 'off' || _pipelineConsumesFlipAudio(steps)),
+        ts
+      );
+      runPipeline(steps, srcCanvas, ctxOut, audio, ts);
     }
     _outTrackBudget(performance.now() - t0);
   }
