@@ -130,10 +130,10 @@ const PHASE_ONE = String.raw`
   };
   const zeroAudio = Object.freeze({ bass:0, mid:0, treble:0, rms:0, transient:0 });
   const expected = {
-    '4:3':{ src:[640,480], out:[1280,960] },
-    '1:1':{ src:[480,480], out:[960,960] },
-    '16:9':{ src:[854,480], out:[1708,960] },
-    '9:16':{ src:[480,854], out:[960,1708] },
+    '4:3':{ src:[640,480], out:[640,480] },
+    '1:1':{ src:[480,480], out:[480,480] },
+    '16:9':{ src:[854,480], out:[854,480] },
+    '9:16':{ src:[480,854], out:[480,854] },
   };
   const realToast = flipToast;
   flipToast = (message, ...args) => {
@@ -200,6 +200,7 @@ const PHASE_ONE = String.raw`
       source:[src.width, src.height],
       pipeA:[_pipeA.width, _pipeA.height],
       pipeB:[_pipeB.width, _pipeB.height],
+      cpuFallback:_pipeA.__flipCpuFallback,
       canvas:[fusionCanvas.width, fusionCanvas.height],
       active,
       bounds:greenBounds(fusionCanvas),
@@ -207,6 +208,50 @@ const PHASE_ONE = String.raw`
   }
   const touchHeights = [...document.querySelectorAll('.fusion-aspect-pill')]
     .map(btn => +btn.getBoundingClientRect().height.toFixed(2));
+  const previewBeforeSnap = fusionCanvas.getContext('2d').getImageData(
+    0, 0, fusionCanvas.width, fusionCanvas.height
+  ).data.slice();
+  const realCanvasToJpeg = _canvasToJpeg;
+  const realSaveBlob = saveBlob;
+  let snapProbe = null;
+  let snapExport = null;
+  _canvasToJpeg = async canvas => {
+    if (canvas === fusionCanvas) {
+      const hi = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const sampled = new Uint8ClampedArray(previewBeforeSnap.length);
+      const previewW = canvas.width / 2;
+      const previewH = canvas.height / 2;
+      for (let y = 0; y < previewH; y++) {
+        for (let x = 0; x < previewW; x++) {
+          const src = ((y * 2) * canvas.width + x * 2) * 4;
+          const dst = (y * previewW + x) * 4;
+          sampled[dst] = hi[src];
+          sampled[dst + 1] = hi[src + 1];
+          sampled[dst + 2] = hi[src + 2];
+          sampled[dst + 3] = hi[src + 3];
+        }
+      }
+      snapProbe = {
+        canvas:[canvas.width, canvas.height],
+        nearestParity:pixelDiff(previewBeforeSnap, sampled),
+      };
+    }
+    return realCanvasToJpeg(canvas);
+  };
+  saveBlob = async (blob, filename) => {
+    const bitmap = await createImageBitmap(blob);
+    snapExport = { filename, bytes:blob.size, width:bitmap.width, height:bitmap.height };
+    bitmap.close();
+  };
+  document.getElementById('btnFusionSnap').click();
+  await wait(() => snapExport, 'FUSION snap');
+  _canvasToJpeg = realCanvasToJpeg;
+  saveBlob = realSaveBlob;
+  const snap = {
+    probe:snapProbe,
+    export:snapExport,
+    previewAfter:[fusionCanvas.width, fusionCanvas.height],
+  };
   const jpeg = await _canvasToJpeg(fusionCanvas);
   const jpegBitmap = await createImageBitmap(jpeg);
   const photo = { bytes:jpeg.size, width:jpegBitmap.width, height:jpegBitmap.height };
@@ -289,6 +334,7 @@ const PHASE_ONE = String.raw`
   recButton.click();
   await wait(() => saved.length === 1, 'blob FUSION', 15000);
   const recording = saved[0];
+  const recCanvasAfter = [fusionCanvas.width, fusionCanvas.height];
 
   document.querySelector('[data-fusion-aspect="16:9"]').click();
   _writeSettings();
@@ -335,7 +381,7 @@ const PHASE_ONE = String.raw`
   sourceStream.getTracks().forEach(track => track.stop());
 
   return {
-    aspects, touchHeights, photo, live, recordingDims, clampDims, recLock, recording,
+    aspects, touchHeights, snap, photo, live, recordingDims, clampDims, recLock, recording, recCanvasAfter,
     persistence:{ stored:stored.fusionAspect },
     parity:{ source:sourceParity, pipeline:pipelineParity },
   };
@@ -430,23 +476,29 @@ async function main() {
     const runtimeMs = Date.now() - started;
 
     const expected = {
-      '4:3':{ src:[640,480], out:[1280,960] },
-      '1:1':{ src:[480,480], out:[960,960] },
-      '16:9':{ src:[854,480], out:[1708,960] },
-      '9:16':{ src:[480,854], out:[960,1708] },
+      '4:3':{ src:[640,480], out:[640,480] },
+      '1:1':{ src:[480,480], out:[480,480] },
+      '16:9':{ src:[854,480], out:[854,480] },
+      '9:16':{ src:[480,854], out:[480,854] },
     };
     for (const [aspect, dims] of Object.entries(expected)) {
       const result = runtime.aspects[aspect];
       assert(JSON.stringify(result.source) === JSON.stringify(dims.src), `${aspect} source=${result.source}`);
       assert(JSON.stringify(result.pipeA) === JSON.stringify(dims.src) && JSON.stringify(result.pipeB) === JSON.stringify(dims.src),
         `${aspect} pipes=${result.pipeA}/${result.pipeB}`);
+      assert(result.cpuFallback === false, `${aspect} pipe CPU fallback=${result.cpuFallback}`);
       assert(JSON.stringify(result.canvas) === JSON.stringify(dims.out), `${aspect} canvas=${result.canvas}`);
       assert(result.active.length === 1 && result.active[0] === aspect, `${aspect} active=${result.active}`);
       assert(result.bounds.pixels > 0 && result.bounds.eccentricityPct < 2,
         `${aspect} circulo=${JSON.stringify(result.bounds)}`);
     }
     assert(runtime.touchHeights.every(height => height >= 40), `touch heights=${runtime.touchHeights}`);
-    assert(runtime.photo.bytes > 0 && runtime.photo.width === 960 && runtime.photo.height === 1708,
+    assert(runtime.snap.probe.canvas[0] === 960 && runtime.snap.probe.canvas[1] === 1708 &&
+      runtime.snap.probe.nearestParity.changedPixels === 0 &&
+      runtime.snap.export.bytes > 0 && runtime.snap.export.width === 960 && runtime.snap.export.height === 1708 &&
+      JSON.stringify(runtime.snap.previewAfter) === JSON.stringify([480,854]),
+      `snap 2x=${JSON.stringify(runtime.snap)}`);
+    assert(runtime.photo.bytes > 0 && runtime.photo.width === 480 && runtime.photo.height === 854,
       `foto 9:16=${JSON.stringify(runtime.photo)}`);
     assert(runtime.live.switches === 10 && runtime.live.trackState === 'live' && runtime.live.fusionRunning && runtime.live.loopAlive,
       `live=${JSON.stringify(runtime.live)}`);
@@ -459,14 +511,16 @@ async function main() {
       `clamp=${JSON.stringify(runtime.clampDims)}`);
     assert(JSON.stringify(runtime.recLock.canvasBefore) === JSON.stringify(runtime.recLock.canvasAfter) &&
       runtime.recLock.selected === '9:16' && /REC/.test(runtime.recLock.toast), `REC lock=${JSON.stringify(runtime.recLock)}`);
-    assert(runtime.recording.bytes > 0 && runtime.recording.width === 480 && runtime.recording.height === 854 &&
+    assert(runtime.recording.bytes > 0 && runtime.recording.width === 960 && runtime.recording.height === 1708 &&
       Number.isFinite(runtime.recording.duration) && runtime.recording.duration > 1.5 && runtime.recording.duration < 5,
       `REC=${JSON.stringify(runtime.recording)}`);
+    assert(JSON.stringify(runtime.recCanvasAfter) === JSON.stringify([480,854]),
+      `preview tras REC=${runtime.recCanvasAfter}`);
     assert(runtime.persistence.stored === '16:9', `stored=${runtime.persistence.stored}`);
     assert(restored.fusionAspect === '16:9' && restored.stored === '16:9' && restored.active[0] === '16:9' &&
-      JSON.stringify(restored.canvas) === JSON.stringify([1708,960]), `restore=${JSON.stringify(restored)}`);
+      JSON.stringify(restored.canvas) === JSON.stringify([854,480]), `restore=${JSON.stringify(restored)}`);
     assert(invalid.fusionAspect === '4:3' && invalid.active[0] === '4:3' &&
-      JSON.stringify(invalid.canvas) === JSON.stringify([1280,960]), `invalid=${JSON.stringify(invalid)}`);
+      JSON.stringify(invalid.canvas) === JSON.stringify([640,480]), `invalid=${JSON.stringify(invalid)}`);
     assert(runtime.parity.source.changedPixels === 0 && runtime.parity.pipeline.changedPixels === 0,
       `paridad=${JSON.stringify(runtime.parity)}`);
 
