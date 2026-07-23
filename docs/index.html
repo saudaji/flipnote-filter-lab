@@ -6075,7 +6075,6 @@ function _renderDitheredCore(source, srcW, srcH, targetCtx, mirror, autoLevels, 
   sampleCtx.drawImage(source, sx, sy, sw, sh, 0, 0, sampleW, sampleH);
   sampleCtx.restore();
 
-  const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
   const outBuf = renderTarget.buffer;
   const p = palOverride || _getPal(false);
   let [PR, PG, PB] = p.paper, [IR, IG, IB] = p.ink;
@@ -6084,8 +6083,10 @@ function _renderDitheredCore(source, srcW, srcH, targetCtx, mirror, autoLevels, 
     [IR, IG, IB] = _hueRotateRGB(IR, IG, IB, upPalHueVal);
   }
 
+  let src = null;
   let minG = 255, maxG = 0;
   if (autoLevels) {
+    src = sampleCtx.getImageData(0, 0, sampleW, sampleH).data;
     for (let i = 0; i < src.length; i += 4) {
       const g = (src[i]*77 + src[i+1]*150 + src[i+2]*29) >> 8;
       if (g < minG) minG = g; if (g > maxG) maxG = g;
@@ -6093,6 +6094,22 @@ function _renderDitheredCore(source, srcW, srcH, targetCtx, mirror, autoLevels, 
   }
   const range = autoLevels ? (maxG - minG || 1) : 255;
   const base  = autoLevels ? minG : 0;
+
+  // Only the deterministic default Bayer path runs on GPU. Legacy Floyd-Steinberg
+  // is serial, while applyEdits includes Math.random(); both remain on CPU.
+  if (!legacyMode && !applyEdits && !options.forceCPU &&
+      _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'dsi-bayer', {
+        palette:[[IR, IG, IB], [PR, PG, PB]],
+        autoLevels,
+        minLuma:base,
+        lumaRange:range,
+      })) {
+    targetCtx.drawImage(_camPaletteWebGLEngine.getResultCanvas(), 0, 0, outW, outH);
+    if (outScan) targetCtx.drawImage(outScan, 0, 0, outW, outH);
+    return;
+  }
+
+  if (!src) src = sampleCtx.getImageData(0, 0, sampleW, sampleH).data;
 
   if (legacyMode) {
     const fsErr = new Float32Array(sampleW * sampleH);
@@ -6298,7 +6315,7 @@ function _renderDolphinCore(source, srcW, srcH, targetCtx, mirror, options = {})
         palette:COLS,
         contrast:dlpContrastVal / 100,
       })) {
-    _drawDolphinCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, outScan, isLgcy);
+    _drawDolphinCoreResult(_camPaletteWebGLEngine.getResultCanvas(), targetCtx, outW, outH, outScan, isLgcy);
     return;
   }
 
@@ -6370,20 +6387,18 @@ function _mixRGB(a, b, t) {
 // canonical nearest-neighbour scale and the existing 2D overlays/glow afterwards.
 const _camPaletteWebGLEngine = (() => {
   const canvas = document.createElement('canvas');
+  canvas.width = 1;
+  canvas.height = 1;
   let gl = null;
   let program = null;
-  let memoryProgram = null;
+  let copyProgram = null;
   let quad = null;
-  let sourceTex = null;
-  let historyTargets = [null, null];
-  let historyIndex = 0;
-  let historyPrimed = false;
-  let floatHistorySupported = false;
-  let sizeKey = '';
+  let resultCanvas = null;
   let ready = false;
   let failed = false;
   let warned = false;
   const locations = new Map();
+  const renderTargetCache = new Map();
 
   const vertSrc = `
     attribute vec2 a_position;
@@ -6397,11 +6412,10 @@ const _camPaletteWebGLEngine = (() => {
     precision highp float;
     varying vec2 v_uv;
     uniform sampler2D u_source;
-    uniform sampler2D u_prev;
     uniform vec2 u_size;
+    uniform float u_auto_levels;
     uniform float u_min_luma;
-    uniform float u_max_luma;
-    uniform float u_primed;
+    uniform float u_luma_range;
 
     vec2 pixelUv(float x, float y) {
       return vec2((x + 0.5) / u_size.x, 1.0 - (y + 0.5) / u_size.y);
@@ -6435,21 +6449,15 @@ const _camPaletteWebGLEngine = (() => {
              bayerQuadrant(x1, y1) * 4.0 +
              bayerQuadrant(x2, y2);
     }
+    float bayer8Threshold(float x, float y) {
+      return floor(bayer8(x, y) * 255.0 / 63.0 + 0.5);
+    }
     float xorBit(float a, float b, float bitValue) {
       return mod(floor(a / bitValue) + floor(b / bitValue), 2.0) * bitValue;
     }
     float xor5(float a, float b) {
       return xorBit(a, b, 1.0) + xorBit(a, b, 2.0) + xorBit(a, b, 4.0) +
              xorBit(a, b, 8.0) + xorBit(a, b, 16.0);
-    }
-    float dryEInk(float x, float y) {
-      float lum = lumaAt(x, y);
-      float range = max(1.0, u_max_luma - u_min_luma);
-      float base = (lum - u_min_luma) * 255.0 / range;
-      float left = lumaAt(max(0.0, x - 1.0), y);
-      float up = lumaAt(x, max(0.0, y - 1.0));
-      float edge = abs(lum - left) * 0.42 + abs(lum - up) * 0.28;
-      return clamp(base * 0.92 + edge - 8.0, 0.0, 255.0);
     }
   `;
   const paletteFrag = commonFrag + `
@@ -6495,39 +6503,24 @@ const _camPaletteWebGLEngine = (() => {
         float value = clamp(lum + floor(bayer4(x, y) * 17.0 / 4.0) - 32.0, 0.0, 255.0);
         band = value > 192.0 ? 0.0 : value > 128.0 ? 1.0 : value > 64.0 ? 2.0 : 3.0;
       } else if (u_mode < 2.5) {
-        float dry = dryEInk(x, y);
-        float prev = u_primed > 0.5 ? texture2D(u_prev, pixelUv(x, y)).r * 255.0 : dry;
-        float dither = (bayer4(x, y) * 17.0 - 128.0) * 0.08;
-        float paper = (mod(x * 13.0 + y * 7.0, 16.0) - 7.5) * 0.9;
-        float value = clamp(dry * 0.86 + prev * 0.14 + dither + paper, 0.0, 255.0);
-        band = value > 224.0 ? 0.0 : value > 176.0 ? 1.0 : value > 124.0 ? 2.0 : value > 72.0 ? 3.0 : 4.0;
+        float gray = u_auto_levels > 0.5
+          ? floor((lum - u_min_luma) * 255.0 / u_luma_range + 0.5)
+          : lum;
+        band = gray < bayer8Threshold(x, y) ? 0.0 : 1.0;
       } else if (u_mode < 3.5) {
         float value = clamp(lum + bayer8(x, y) - 32.0, 0.0, 255.0);
         band = value < 42.0 ? 0.0 : value < 100.0 ? 1.0 : value < 160.0 ? 2.0 :
                value < 210.0 ? 3.0 : value < 235.0 ? 4.0 : 5.0;
-      } else {
-        float range = max(1.0, u_max_luma - u_min_luma);
-        float norm = (lum - u_min_luma) * 255.0 / range;
-        float left = lumaAt(max(0.0, x - 1.0), y);
-        float up = lumaAt(x, max(0.0, y - 1.0));
-        float edge = (abs(lum - left) + abs(lum - up)) * 0.52;
-        float value = norm * 0.78 + edge * 1.05 + (norm > 180.0 ? 16.0 : 0.0);
-        value = clamp(value, 0.0, 255.0);
-        band = value < 24.0 ? 0.0 : value < 58.0 ? 1.0 : value < 96.0 ? 2.0 :
-               value < 148.0 ? 3.0 : value < 198.0 ? 4.0 : value < 234.0 ? 5.0 : 6.0;
-        if (edge > 42.0) band = min(6.0, band + 1.0);
       }
       gl_FragColor = vec4(paletteColor(band) / 255.0, 1.0);
     }
   `;
-  const memoryFrag = commonFrag + `
+  const copyFrag = `
+    precision highp float;
+    varying vec2 v_uv;
+    uniform sampler2D u_source;
     void main() {
-      float x = floor(gl_FragCoord.x);
-      float y = u_size.y - 1.0 - floor(gl_FragCoord.y);
-      float dry = dryEInk(x, y);
-      float prev = u_primed > 0.5 ? texture2D(u_prev, pixelUv(x, y)).r * 255.0 : dry;
-      float nextValue = prev * 0.93 + dry * 0.07;
-      gl_FragColor = vec4(nextValue / 255.0, 0.0, 0.0, 1.0);
+      gl_FragColor = texture2D(u_source, v_uv);
     }
   `;
 
@@ -6577,8 +6570,8 @@ const _camPaletteWebGLEngine = (() => {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, type || gl.UNSIGNED_BYTE, null);
     return texture;
   }
-  function createTarget(w, h, type = null) {
-    const texture = createTexture(w, h, type);
+  function createTarget(w, h) {
+    const texture = createTexture(w, h);
     const framebuffer = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
@@ -6587,47 +6580,32 @@ const _camPaletteWebGLEngine = (() => {
       gl.deleteFramebuffer(framebuffer);
       throw new Error('CAM palette framebuffer incomplete');
     }
-    return { texture, framebuffer, w, h };
-  }
-  function disposeTarget(target) {
-    if (!target) return;
-    gl.deleteTexture(target.texture);
-    gl.deleteFramebuffer(target.framebuffer);
-  }
-  function clearHistory() {
-    if (!gl) return;
-    for (const target of historyTargets) {
-      if (!target) continue;
-      gl.bindFramebuffer(gl.FRAMEBUFFER, target.framebuffer);
-      gl.viewport(0, 0, target.w, target.h);
-      gl.clearColor(0, 0, 0, 1);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    historyIndex = 0;
-    historyPrimed = false;
+    return { texture, framebuffer };
   }
   function ensureSize(w, h) {
-    const nextKey = `${w}x${h}`;
-    if (sizeKey === nextKey) return;
-    sizeKey = nextKey;
-    canvas.width = w;
-    canvas.height = h;
-    disposeTarget(historyTargets[0]);
-    disposeTarget(historyTargets[1]);
-    if (floatHistorySupported) {
-      let firstFloatTarget = null;
-      try {
-        firstFloatTarget = createTarget(w, h, gl.FLOAT);
-        historyTargets = [firstFloatTarget, createTarget(w, h, gl.FLOAT)];
-      } catch (_) {
-        disposeTarget(firstFloatTarget);
-        historyTargets = [null, null];
-        floatHistorySupported = false;
-      }
+    const key = `${w}x${h}`;
+    let target = renderTargetCache.get(key);
+    if (!target) {
+      const output = document.createElement('canvas');
+      output.width = w;
+      output.height = h;
+      const outputCtx = output.getContext('2d');
+      outputCtx.imageSmoothingEnabled = false;
+      target = {
+        sourceTex:createTexture(w, h),
+        outputTarget:createTarget(w, h),
+        output,
+        outputCtx,
+        w,
+        h,
+      };
+      renderTargetCache.set(key, target);
     }
-    if (!floatHistorySupported) historyTargets = [createTarget(w, h), createTarget(w, h)];
-    clearHistory();
+    if (canvas.width < w || canvas.height < h) {
+      canvas.width = Math.max(canvas.width, w);
+      canvas.height = Math.max(canvas.height, h);
+    }
+    return target;
   }
   function useProgram(nextProgram) {
     gl.useProgram(nextProgram);
@@ -6641,13 +6619,12 @@ const _camPaletteWebGLEngine = (() => {
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1i(loc(nextProgram, name), unit);
   }
-  function setCommonUniforms(nextProgram, w, h, params, previousTexture) {
-    bindTexture(nextProgram, 'u_source', sourceTex, 0);
-    bindTexture(nextProgram, 'u_prev', previousTexture, 1);
+  function setCommonUniforms(nextProgram, w, h, sourceTexture, params) {
+    bindTexture(nextProgram, 'u_source', sourceTexture, 0);
     gl.uniform2f(loc(nextProgram, 'u_size'), w, h);
+    gl.uniform1f(loc(nextProgram, 'u_auto_levels'), params.autoLevels ? 1 : 0);
     gl.uniform1f(loc(nextProgram, 'u_min_luma'), params.minLuma ?? 0);
-    gl.uniform1f(loc(nextProgram, 'u_max_luma'), params.maxLuma ?? 255);
-    gl.uniform1f(loc(nextProgram, 'u_primed'), historyPrimed && params.primed !== false ? 1 : 0);
+    gl.uniform1f(loc(nextProgram, 'u_luma_range'), params.lumaRange ?? 255);
   }
   function init() {
     if (ready) return true;
@@ -6656,20 +6633,16 @@ const _camPaletteWebGLEngine = (() => {
       gl = canvas.getContext('webgl', { alpha:false, antialias:false, premultipliedAlpha:false }) ||
            canvas.getContext('experimental-webgl', { alpha:false, antialias:false, premultipliedAlpha:false });
       if (!gl) throw new Error('WebGL unavailable');
-      const floatTexture = gl.getExtension('OES_texture_float');
-      const floatColorBuffer = gl.getExtension('WEBGL_color_buffer_float');
-      floatHistorySupported = !!(floatTexture && floatColorBuffer);
       quad = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, quad);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.BLEND);
-      sourceTex = createTexture(1, 1);
       program = makeProgram(paletteFrag);
-      memoryProgram = makeProgram(memoryFrag);
-      const commonNames = ['u_source', 'u_prev', 'u_size', 'u_min_luma', 'u_max_luma', 'u_primed'];
+      copyProgram = makeProgram(copyFrag);
+      const commonNames = ['u_source', 'u_size', 'u_auto_levels', 'u_min_luma', 'u_luma_range'];
       cacheLocations(program, commonNames.concat(['u_mode', 'u_contrast', 'u_col0', 'u_col1', 'u_col2', 'u_col3', 'u_col4', 'u_col5', 'u_col6']));
-      cacheLocations(memoryProgram, commonNames);
+      cacheLocations(copyProgram, ['u_source']);
       ready = true;
       return true;
     } catch (err) {
@@ -6683,32 +6656,20 @@ const _camPaletteWebGLEngine = (() => {
     }
   }
   function render(source, w, h, mode, params = {}) {
+    if (gl && gl.isContextLost()) return false;
     if (!init()) return false;
-    if (mode === 'caskia-eink' && !floatHistorySupported) return false;
+    if (gl.isContextLost()) return false;
     try {
-      ensureSize(w, h);
-      if (mode === 'caskia-eink' && params.primed === false) clearHistory();
-      gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+      const target = ensureSize(w, h);
+      gl.bindTexture(gl.TEXTURE_2D, target.sourceTex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-      const previousTarget = historyTargets[historyIndex];
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, source);
 
-      if (mode === 'caskia-eink') {
-        const nextIndex = historyIndex ? 0 : 1;
-        const nextTarget = historyTargets[nextIndex];
-        gl.bindFramebuffer(gl.FRAMEBUFFER, nextTarget.framebuffer);
-        gl.viewport(0, 0, w, h);
-        useProgram(memoryProgram);
-        setCommonUniforms(memoryProgram, w, h, params, previousTarget.texture);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        historyIndex = nextIndex;
-      }
-
-      const modeIds = { dolphin:0, 'caskia-std':1, 'caskia-eink':2, 'vfd-std':3, 'vfd-thermal':4 };
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      const modeIds = { dolphin:0, 'caskia-std':1, 'dsi-bayer':2, 'vfd-std':3 };
+      gl.bindFramebuffer(gl.FRAMEBUFFER, target.outputTarget.framebuffer);
       gl.viewport(0, 0, w, h);
       useProgram(program);
-      setCommonUniforms(program, w, h, params, previousTarget.texture);
+      setCommonUniforms(program, w, h, target.sourceTex, params);
       gl.uniform1f(loc(program, 'u_mode'), modeIds[mode] ?? 0);
       gl.uniform1f(loc(program, 'u_contrast'), params.contrast ?? 1);
       const palette = params.palette || [];
@@ -6717,8 +6678,16 @@ const _camPaletteWebGLEngine = (() => {
         gl.uniform3f(loc(program, `u_col${i}`), color[0], color[1], color[2]);
       }
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, w, h);
+      useProgram(copyProgram);
+      bindTexture(copyProgram, 'u_source', target.outputTarget.texture, 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       gl.flush();
-      if (mode === 'caskia-eink') historyPrimed = true;
+      target.outputCtx.clearRect(0, 0, w, h);
+      target.outputCtx.drawImage(canvas, 0, canvas.height - h, w, h, 0, 0, w, h);
+      resultCanvas = target.output;
       return true;
     } catch (err) {
       if (!warned) {
@@ -6730,8 +6699,10 @@ const _camPaletteWebGLEngine = (() => {
       return false;
     }
   }
-  function resetEInk() {
-    clearHistory();
+  // Compatibility-only no-op: E-INK history now exists exclusively in the CPU core.
+  function resetEInk() {}
+  function getResultCanvas() {
+    return resultCanvas;
   }
   canvas.addEventListener('webglcontextlost', event => {
     event.preventDefault();
@@ -6740,7 +6711,7 @@ const _camPaletteWebGLEngine = (() => {
     failed = true;
     ready = false;
   });
-  return { canvas, render, resetEInk, hasEInkHistory:() => historyPrimed, isReady:() => ready && !failed };
+  return { canvas, render, getResultCanvas, resetEInk, hasEInkHistory:() => false, isReady:() => ready && !failed };
 })();
 
 // ════════════════════════════════════════════════════════════════════
@@ -7022,7 +6993,7 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
     if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'caskia-std', {
       palette:CASKIA_LCD_COLS,
     })) {
-      _drawCaskiaCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, sampleW, sampleH, false);
+      _drawCaskiaCoreResult(_camPaletteWebGLEngine.getResultCanvas(), targetCtx, outW, outH, sampleW, sampleH, false);
       return;
     }
     const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
@@ -7056,20 +7027,6 @@ function _renderCaskiaCore(source, srcW, srcH, targetCtx, mirror, options = {}) 
     if (lum[i] > maxG) maxG = lum[i];
   }
   const range = maxG - minG || 1;
-  if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'caskia-eink', {
-    palette:CASKIA_EINK_COLS,
-    minLuma:minG,
-    maxLuma:maxG,
-    primed:_caskiaEInkPrimed,
-  })) {
-    _caskiaEInkPrimed = true;
-    _drawCaskiaCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, sampleW, sampleH, true);
-    return;
-  }
-  if (!options.forceCPU && _camPaletteWebGLEngine.hasEInkHistory()) {
-    _caskiaEInkPrimed = false;
-    _camPaletteWebGLEngine.resetEInk();
-  }
   for (let y = 0; y < sampleH; y++) {
     for (let x = 0; x < sampleW; x++) {
       const idx = y * sampleW + x;
@@ -7411,14 +7368,6 @@ function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
       if (lum[i] > maxG) maxG = lum[i];
     }
     const range = maxG - minG || 1;
-    if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'vfd-thermal', {
-      palette:THRML_COLS,
-      minLuma:minG,
-      maxLuma:maxG,
-    })) {
-      _drawVfdCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, true);
-      return;
-    }
     for (let y = 0; y < sampleH; y++) {
       for (let x = 0; x < sampleW; x++) {
         const idx = y * sampleW + x;
@@ -7452,7 +7401,7 @@ function _renderVfdCore(source, srcW, srcH, targetCtx, mirror, options = {}) {
   if (!options.forceCPU && _camPaletteWebGLEngine.render(renderTarget.canvas, sampleW, sampleH, 'vfd-std', {
     palette:cols,
   })) {
-    _drawVfdCoreResult(_camPaletteWebGLEngine.canvas, targetCtx, outW, outH, false);
+    _drawVfdCoreResult(_camPaletteWebGLEngine.getResultCanvas(), targetCtx, outW, outH, false);
     return;
   }
   const { data: src } = sampleCtx.getImageData(0, 0, sampleW, sampleH);
