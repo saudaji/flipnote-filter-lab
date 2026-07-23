@@ -19316,6 +19316,333 @@ let _ctxScrAudioBuf;
 // Core pixel effect — applies SCRASH effects from srcCtx to dstCtx
 // srcCtx must have pixels already drawn; dstCtx receives result
 // t = elapsed seconds (used for animation)
+const _scrashWebGLEngine = (() => {
+  let canvas = document.createElement('canvas');
+  let gl = null;
+  let ready = false;
+  let failed = false;
+  let warned = false;
+  let quad = null;
+  let sourceTex = null;
+  let program = null;
+  let positionLocation = -1;
+  let sizeKey = '';
+  let frameSeed = 0;
+  const uniforms = new Map();
+  const paletteData = new Float32Array(7 * 3);
+
+  const vertSrc = `
+    attribute vec2 a_position;
+    varying vec2 v_uv;
+    void main() {
+      v_uv = a_position * 0.5 + 0.5;
+      gl_Position = vec4(a_position, 0.0, 1.0);
+    }
+  `;
+  const fragSrc = `
+    #ifdef GL_FRAGMENT_PRECISION_HIGH
+      precision highp float;
+    #else
+      precision mediump float;
+    #endif
+    varying vec2 v_uv;
+    uniform sampler2D u_source;
+    uniform vec2 u_resolution;
+    uniform float u_chromaPx;
+    uniform float u_wavePx;
+    uniform float u_wavePhase;
+    uniform float u_extraWaves;
+    uniform float u_drip;
+    uniform float u_crush;
+    uniform float u_neon;
+    uniform float u_hue;
+    uniform float u_grainPx;
+    uniform float u_chaosChance;
+    uniform float u_paletteChaosChance;
+    uniform float u_seed;
+    uniform int u_paletteSize;
+    uniform vec3 u_palette[7];
+
+    float hash(vec2 p) {
+      return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453123);
+    }
+    vec3 paletteAt(int index) {
+      if (index == 0) return u_palette[0];
+      if (index == 1) return u_palette[1];
+      if (index == 2) return u_palette[2];
+      if (index == 3) return u_palette[3];
+      if (index == 4) return u_palette[4];
+      if (index == 5) return u_palette[5];
+      return u_palette[6];
+    }
+    vec3 quantizePalette(vec3 color, vec2 pixel) {
+      float randomPick = floor(hash(pixel + vec2(u_seed * 1.91, u_seed * 0.73)) * float(u_paletteSize));
+      bool chaosPick = hash(pixel + vec2(u_seed * 0.41, u_seed * 2.17)) < u_paletteChaosChance;
+      vec3 best = u_palette[0];
+      float bestDist = dot(color - best, color - best);
+      for (int i = 0; i < 7; i++) {
+        if (i < u_paletteSize) {
+          vec3 candidate = paletteAt(i);
+          float dist = dot(color - candidate, color - candidate);
+          if (chaosPick) {
+            if (abs(float(i) - randomPick) < 0.5) best = candidate;
+          } else if (dist < bestDist) {
+            bestDist = dist;
+            best = candidate;
+          }
+        }
+      }
+      return best;
+    }
+    void main() {
+      vec2 pixel = floor(vec2(v_uv.x, 1.0 - v_uv.y) * u_resolution);
+      float row = pixel.y;
+
+      float wave = sin(row * 0.06 + u_wavePhase) * u_wavePx;
+      if (u_extraWaves > 0.5) {
+        wave += sin(row * 0.102 + u_wavePhase * 1.7 + 1.3) * u_wavePx * 0.6;
+        wave += sin(row * 0.138 + u_wavePhase * 2.3 + 2.6) * u_wavePx * 0.35;
+      }
+      wave = floor(wave + 0.5);
+
+      float sourceY = v_uv.y;
+      float dripRoll = hash(vec2(row + 0.5, u_seed * 0.37));
+      if (u_drip > 0.0 && dripRoll < u_drip * 0.15) {
+        float dripPx = floor(hash(vec2(row + 19.17, u_seed * 1.31)) * u_drip * 30.0);
+        float candidateY = sourceY - dripPx / u_resolution.y;
+        if (candidateY >= 0.0) sourceY = candidateY;
+      }
+
+      float gX = fract(v_uv.x + wave / u_resolution.x);
+      float rX = fract(v_uv.x + (wave - u_chromaPx) / u_resolution.x);
+      float bX = fract(v_uv.x + (wave + u_chromaPx) / u_resolution.x);
+      vec4 center = texture2D(u_source, vec2(gX, sourceY));
+      vec3 color = vec3(
+        texture2D(u_source, vec2(rX, sourceY)).r,
+        center.g,
+        texture2D(u_source, vec2(bX, sourceY)).b
+      );
+
+      float lum = dot(color, vec3(77.0, 150.0, 29.0) / 256.0);
+      if (u_crush > 0.0 && lum < u_crush) { color = vec3(0.0); lum = 0.0; }
+      if (u_neon > 0.0) {
+        vec3 target = lum < 0.33203125 ? vec3(0.8, 0.0, 1.0)
+          : lum < 0.6640625 ? vec3(0.0, 1.0, 0.0)
+          : vec3(1.0, 119.0 / 255.0, 0.0);
+        color = mix(color, target, u_neon);
+      }
+
+      if (abs(u_hue) > 0.000001) {
+        float hc = cos(u_hue), hs = sin(u_hue);
+        float r = dot(color, vec3(
+          0.213 + hc * 0.787 - hs * 0.213,
+          0.213 - hc * 0.213 + hs * 0.143,
+          0.213 - hc * 0.213 - hs * 0.787));
+        float g = dot(color, vec3(
+          0.715 - hc * 0.715 - hs * 0.715,
+          0.715 + hc * 0.285 + hs * 0.140,
+          0.715 - hc * 0.715 + hs * 0.715));
+        float b = dot(color, vec3(
+          0.072 - hc * 0.072 + hs * 0.928,
+          0.072 - hc * 0.072 - hs * 0.283,
+          0.072 + hc * 0.928 + hs * 0.072));
+        color = clamp(vec3(r, g, b), 0.0, 1.0);
+      }
+
+      if (u_grainPx > 0.0) {
+        float noise = (hash(pixel + vec2(u_seed * 2.31, u_seed * 1.13)) - 0.5) * u_grainPx / 255.0;
+        color = clamp(color + noise, 0.0, 1.0);
+      }
+      if (u_paletteSize > 0) {
+        color = quantizePalette(color, pixel);
+      } else if (u_chaosChance > 0.0 && hash(pixel + vec2(u_seed * 0.83, u_seed * 1.67)) < u_chaosChance) {
+        color = vec3(
+          hash(pixel + vec2(u_seed * 1.11, 17.0)),
+          hash(pixel + vec2(29.0, u_seed * 1.53)),
+          hash(pixel + vec2(u_seed * 1.97, 43.0))
+        );
+      }
+      gl_FragColor = vec4(color, center.a);
+    }
+  `;
+
+  function compile(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      const info = gl.getShaderInfoLog(shader) || 'unknown shader error';
+      gl.deleteShader(shader);
+      throw new Error(info);
+    }
+    return shader;
+  }
+  function makeProgram() {
+    const vs = compile(gl.VERTEX_SHADER, vertSrc);
+    const fs = compile(gl.FRAGMENT_SHADER, fragSrc);
+    const nextProgram = gl.createProgram();
+    gl.attachShader(nextProgram, vs);
+    gl.attachShader(nextProgram, fs);
+    gl.linkProgram(nextProgram);
+    gl.deleteShader(vs);
+    gl.deleteShader(fs);
+    if (!gl.getProgramParameter(nextProgram, gl.LINK_STATUS)) {
+      const info = gl.getProgramInfoLog(nextProgram) || 'unknown program link error';
+      gl.deleteProgram(nextProgram);
+      throw new Error(info);
+    }
+    return nextProgram;
+  }
+  function createSourceTexture(w, h) {
+    if (sourceTex) gl.deleteTexture(sourceTex);
+    sourceTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  }
+  function ensureSize(w, h) {
+    const nextKey = `${w}x${h}`;
+    if (sizeKey === nextKey && sourceTex) return;
+    sizeKey = nextKey;
+    canvas.width = w;
+    canvas.height = h;
+    createSourceTexture(w, h);
+    gl.viewport(0, 0, w, h);
+  }
+  function init() {
+    if (ready) return true;
+    if (failed) return false;
+    try {
+      gl = canvas.getContext('webgl', { alpha:true, antialias:false, premultipliedAlpha:false }) ||
+           canvas.getContext('experimental-webgl', { alpha:true, antialias:false, premultipliedAlpha:false });
+      if (!gl) throw new Error('WebGL unavailable');
+      quad = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+      program = makeProgram();
+      positionLocation = gl.getAttribLocation(program, 'a_position');
+      [
+        'u_source', 'u_resolution', 'u_chromaPx', 'u_wavePx', 'u_wavePhase',
+        'u_extraWaves', 'u_drip', 'u_crush', 'u_neon', 'u_hue', 'u_grainPx',
+        'u_chaosChance', 'u_paletteChaosChance', 'u_seed', 'u_paletteSize', 'u_palette[0]',
+      ].forEach(name => uniforms.set(name, gl.getUniformLocation(program, name)));
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.BLEND);
+      gl.disable(gl.DITHER);
+      ready = true;
+      return true;
+    } catch (err) {
+      if (!warned) {
+        console.warn('GLITCH WebGL init failed, using JS fallback.', err);
+        warned = true;
+      }
+      failed = true;
+      ready = false;
+      return false;
+    }
+  }
+  function render(sourceCanvas, w, h, t, audioMod, p) {
+    if (!sourceCanvas || !w || !h || !init()) return false;
+    try {
+      if (gl.isContextLost()) throw new Error('WebGL context lost');
+      ensureSize(w, h);
+
+      const P = p || _scrTabLayerParams;
+      const chromaBase = P.chroma ?? scrChromaVal, dripBase = P.drip ?? scrDripVal;
+      const neonBase = P.neon ?? scrNeonVal, waveBase = P.wave ?? scrWaveVal;
+      const crushBase = P.crush ?? scrCrushVal, hueBase = P.hue ?? scrHueVal;
+      const grainBase = P.grain ?? scrGrainVal, chaosBase = P.chaos ?? scrChaosVal;
+      const audioReactBase = P.audioReact ?? scrAudioReactVal;
+      const animate = P.animate ?? scrAnimateOn, speed = P.speed ?? scrSpeedVal;
+      let chromaEff = chromaBase, waveEff = waveBase, grainEff = grainBase;
+      let dripEff = dripBase, chaosEff = chaosBase, hueSpeedExtra = 0;
+      let extraWaves = false;
+      if (audioMod) {
+        const I = audioReactBase / 100;
+        waveEff = Math.min(40, waveBase + audioMod.bass * 22 * I);
+        chromaEff = Math.min(50, chromaBase + (audioMod.mid + audioMod.transient) * 28 * I);
+        grainEff = Math.min(100, grainBase + audioMod.treble * 45 * I);
+        hueSpeedExtra = audioMod.treble * 90 * I;
+        let S = P._scrRuntime;
+        if (!S) {
+          S = { burst:0, lastT:t };
+          Object.defineProperty(P, '_scrRuntime', { value:S, enumerable:false });
+        }
+        const dt = Math.max(0, t - S.lastT);
+        S.lastT = t;
+        S.burst *= Math.exp(-dt / SCR_BURST_TAU);
+        if (S.burst < 1e-3) S.burst = 0;
+        if (audioMod.transient > 0.45) S.burst = 1;
+        dripEff = Math.min(100, dripBase + S.burst * 35 * I);
+        chaosEff = Math.min(100, chaosBase + S.burst * 30 * I);
+        extraWaves = audioMod.bass > 0.6;
+      }
+      const animT = t * speed * 0.02;
+      const chromaPx = animate ? Math.floor((Math.sin(animT * 1.3) * 0.5 + 0.5) * chromaEff) : Math.floor(chromaEff);
+      const wavePx = animate ? (Math.sin(animT * 0.8) * 0.5 + 0.5) * waveEff : waveEff;
+      const palette = SCR_PY_PALETTES[scrPyPal] || null;
+      paletteData.fill(0);
+      if (palette) {
+        for (let i = 0; i < palette.length; i++) {
+          paletteData[i * 3] = palette[i][0] / 255;
+          paletteData[i * 3 + 1] = palette[i][1] / 255;
+          paletteData[i * 3 + 2] = palette[i][2] / 255;
+        }
+      }
+
+      gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
+      gl.useProgram(program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+      gl.enableVertexAttribArray(positionLocation);
+      gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, sourceTex);
+      gl.uniform1i(uniforms.get('u_source'), 0);
+      gl.uniform2f(uniforms.get('u_resolution'), w, h);
+      gl.uniform1f(uniforms.get('u_chromaPx'), chromaPx);
+      gl.uniform1f(uniforms.get('u_wavePx'), wavePx);
+      gl.uniform1f(uniforms.get('u_wavePhase'), animT);
+      gl.uniform1f(uniforms.get('u_extraWaves'), extraWaves ? 1 : 0);
+      gl.uniform1f(uniforms.get('u_drip'), dripEff / 100);
+      gl.uniform1f(uniforms.get('u_crush'), crushBase / 100);
+      gl.uniform1f(uniforms.get('u_neon'), neonBase / 100);
+      gl.uniform1f(uniforms.get('u_hue'), (hueBase + hueSpeedExtra * t) * Math.PI / 180);
+      gl.uniform1f(uniforms.get('u_grainPx'), grainEff * 2);
+      gl.uniform1f(uniforms.get('u_chaosChance'), palette ? 0 : chaosEff * 0.003);
+      gl.uniform1f(uniforms.get('u_paletteChaosChance'), palette ? scrChaosVal * 0.003 : 0);
+      gl.uniform1f(uniforms.get('u_seed'), ++frameSeed + Math.random() * 4096);
+      gl.uniform1i(uniforms.get('u_paletteSize'), palette ? palette.length : 0);
+      gl.uniform3fv(uniforms.get('u_palette[0]'), paletteData);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      return true;
+    } catch (err) {
+      if (!warned) {
+        console.warn('GLITCH WebGL runtime failed, using JS fallback.', err);
+        warned = true;
+      }
+      failed = true;
+      ready = false;
+      return false;
+    }
+  }
+  function reset() {
+    frameSeed = 0;
+  }
+  canvas.addEventListener('webglcontextlost', event => {
+    event.preventDefault();
+    if (!warned) console.warn('GLITCH WebGL context lost, using JS fallback.');
+    warned = true;
+    failed = true;
+    ready = false;
+  });
+  return { canvas, render, reset, isReady:() => ready && !failed };
+})();
+
 let _scrashOutBuffer = new Uint8ClampedArray(0);
 let _scrashRandWidth = 0;
 let _scrashGrainNoise = new Int16Array(0);
@@ -19323,6 +19650,20 @@ let _scrashChaosMask = new Uint8Array(0);
 let _scrashChaosR = new Uint8Array(0), _scrashChaosG = new Uint8Array(0), _scrashChaosB = new Uint8Array(0);
 const _scrashClamp8 = Uint8Array.from({ length: 512 }, (_, i) => Math.max(0, Math.min(255, i - 128)));
 function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
+  // Keep the optimized T9 implementation below as the exact fallback. The
+  // `typeof` guard also lets the standalone perf harness extract this function
+  // without having to instantiate WebGL.
+  if (srcCtx?.canvas && typeof _scrashWebGLEngine !== 'undefined' &&
+      _scrashWebGLEngine.render(srcCtx.canvas, w, h, t, audioMod, p)) {
+    dstCtx.save();
+    dstCtx.setTransform(1, 0, 0, 1, 0, 0);
+    dstCtx.globalAlpha = 1;
+    dstCtx.globalCompositeOperation = 'copy';
+    dstCtx.imageSmoothingEnabled = false;
+    dstCtx.drawImage(_scrashWebGLEngine.canvas, 0, 0, w, h);
+    dstCtx.restore();
+    return true;
+  }
   const { data: px } = srcCtx.getImageData(0, 0, w, h);
   const outLength = w * h * 4;
   if (_scrashOutBuffer.length !== outLength) _scrashOutBuffer = new Uint8ClampedArray(outLength);
@@ -19363,6 +19704,7 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
     const dt = Math.max(0, t - S.lastT);
     S.lastT = t;
     S.burst *= Math.exp(-dt / SCR_BURST_TAU);
+    if (S.burst < 1e-3) S.burst = 0;
     if (A.transient > 0.45) S.burst = 1;
     dripEff  = Math.min(100, dripBase  + S.burst * 35 * I);
     chaosEff = Math.min(100, chaosBase + S.burst * 30 * I);
@@ -19505,6 +19847,7 @@ function _applyScrash(srcCtx, dstCtx, w, h, t, audioMod, p) {
     }
   }
   dstCtx.putImageData(new ImageData(out, w, h), 0, 0);
+  return false;
 }
 
 // Reads band energies (bass/mid/treble/rms, each 0..1) for the audio-only source painting.
