@@ -474,7 +474,7 @@ async function main() {
     await evaluate(control, `
       document.querySelector('#stageLayersList [data-i="2"][data-act="asciitoggle"]').click();
       const slider = document.querySelector('#stageLayersList [data-ascii-param="cols"]');
-      slider.value = 32;
+      slider.value = _asciiColsToDensity(32);
       slider.dispatchEvent(new Event('input', { bubbles:true }));
       true;
     `);
@@ -540,13 +540,16 @@ async function main() {
       localStorage.setItem('flipSettings', JSON.stringify(settings));
       return true;
     })()`);
+    await evaluate(control, `window.__preReload = true; true`);
     await control.send('Page.reload', { ignoreCache:true });
     await waitFor(() => evaluate(control,
-      `document.readyState === 'complete' && typeof _stageClampState === 'function'`), 'reload clamp');
+      `typeof window.__preReload === 'undefined' && document.readyState === 'complete' && typeof _stageClampState === 'function'`), 'reload clamp');
     await evaluate(control, `document.getElementById('btnSplashStage').click(); true`);
     await waitFor(() => evaluate(control,
       `document.querySelectorAll('#stageLayersList .edit-layer-row').length === 4`), 'capas restauradas');
-    await timeout(400);
+    await waitFor(() => evaluate(control,
+      `JSON.parse(localStorage.getItem('flipSettings') || '{}').stageState?.pipeline?.[2]?.params?.cols === 720`),
+      'snapshot clamp persistido');
     const clamped = await evaluate(control, `(() => ({
       runtime:window._stageState,
       stored:JSON.parse(localStorage.getItem('flipSettings')).stageState,
@@ -558,7 +561,7 @@ async function main() {
     assert(JSON.stringify(clamped.runtime.pipeline[0].params) === JSON.stringify(expectedGlitch),
       `clamp GLITCH=${JSON.stringify(clamped.runtime.pipeline[0].params)}`);
     assert(clamped.runtime.pipeline[1].family === undefined, `clamp CAM=${JSON.stringify(clamped.runtime.pipeline[1])}`);
-    assert(JSON.stringify(clamped.runtime.pipeline[2].params) === JSON.stringify({ cols:160, ink:'auto', paper:'auto', gradient:'normal' }),
+    assert(JSON.stringify(clamped.runtime.pipeline[2].params) === JSON.stringify({ cols:720, ink:'auto', paper:'auto', gradient:'normal' }),
       `clamp ASCII=${JSON.stringify(clamped.runtime.pipeline[2].params)}`);
     assert(JSON.stringify(clamped.runtime.pipeline[3].params) === JSON.stringify({ aura:'m', ink:'white' }),
       `clamp FLOW=${JSON.stringify(clamped.runtime.pipeline[3].params)}`);
