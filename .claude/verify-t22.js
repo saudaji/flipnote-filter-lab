@@ -160,7 +160,7 @@ async function preparePage(browser, url, viewport) {
   }
   await page.send('Page.addScriptToEvaluateOnNewDocument', { source:INIT_SCRIPT });
   await page.send('Page.navigate', { url });
-  await waitFor(() => evaluate(page, 'document.readyState === "complete"'), `carga ${url}`);
+  await waitFor(() => evaluate(page, 'typeof window.__preReload === "undefined" && document.readyState === "complete"'), `carga ${url}`);
   return page;
 }
 
