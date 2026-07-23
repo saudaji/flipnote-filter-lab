@@ -251,6 +251,11 @@ const HELPERS = String.raw`
     }
     return { changedPixels, totalPixels:a.length / 4, meanChannelDelta:totalDelta / (a.length / 4) / 3, maxDelta };
   };
+  const pixelHash = data => {
+    let hash = 2166136261;
+    for (let i = 0; i < data.length; i++) hash = Math.imul(hash ^ data[i], 16777619);
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  };
   const perceptual = (a, b, w, h) => {
     const cols = 40, rows = 30, va = [], vb = [];
     for (let gy = 0; gy < rows; gy++) for (let gx = 0; gx < cols; gx++) {
@@ -433,6 +438,238 @@ ${HELPERS}
   };
 })()`;
 
+const DIRECT_UPLOAD_PHASE = String.raw`
+(async () => {
+${HELPERS}
+  configure({ mode:'STATIC', color:'BLUE', intensity:55, detail:72, presence:80, trace:44, definition:76 });
+  const base = makeSource(640, 360);
+  const source = document.createElement('canvas');
+  source.width = base.width;
+  source.height = base.height;
+  const sourceCtx = source.getContext('2d');
+  const reference = document.createElement('canvas');
+  reference.width = 384;
+  reference.height = 288;
+  const referenceCtx = reference.getContext('2d', { willReadFrequently:true });
+  const output = makeOutput();
+  const gl = _oscamWebGLEngine.canvas.getContext('webgl');
+  const cfg = _oscamGetConfig();
+  const palette = _oscamGetModePalette();
+  const nativeNow = performance.now.bind(performance);
+  const ownNowDescriptor = Object.getOwnPropertyDescriptor(performance, 'now');
+  let frameNow = 1000;
+  Object.defineProperty(performance, 'now', { configurable:true, value:() => frameNow });
+  const paintFrame = frame => {
+    sourceCtx.setTransform(1, 0, 0, 1, 0, 0);
+    sourceCtx.drawImage(base, 0, 0);
+    sourceCtx.fillStyle = '#e7ff4f';
+    sourceCtx.fillRect(18 + (frame * 11) % 520, 32 + (frame * 7) % 220, 72, 54);
+    sourceCtx.strokeStyle = '#ff3264';
+    sourceCtx.lineWidth = 11;
+    sourceCtx.beginPath();
+    sourceCtx.moveTo(0, 40 + (frame * 13) % 260);
+    sourceCtx.lineTo(640, 300 - (frame * 9) % 220);
+    sourceCtx.stroke();
+  };
+  const prepareReference = () => {
+    const [sx, sy, sw, sh] = cropCoords(source.width, source.height);
+    referenceCtx.setTransform(1, 0, 0, 1, 0, 0);
+    referenceCtx.clearRect(0, 0, reference.width, reference.height);
+    referenceCtx.translate(reference.width, 0);
+    referenceCtx.scale(-1, 1);
+    referenceCtx.drawImage(source, sx, sy, sw, sh, 0, 0, reference.width, reference.height);
+    referenceCtx.setTransform(1, 0, 0, 1, 0, 0);
+  };
+  const runSequence = useReference => {
+    _oscamWebGLEngine.reset();
+    const stationary = [];
+    const started = nativeNow();
+    for (let frame = 0; frame < 45; frame++) {
+      frameNow = 1000 + frame * (1000 / 30);
+      paintFrame(frame);
+      if (useReference) prepareReference();
+      const input = useReference ? reference : source;
+      const rendered = _oscamWebGLEngine.render(
+        input,
+        input.width,
+        input.height,
+        useReference ? false : true,
+        'STATIC',
+        cfg,
+        palette,
+      );
+      if (!rendered) throw new Error('OSCAM WebGL no renderizo secuencia A/B');
+      gl.finish();
+      if (frame >= 30) {
+        output.ctx.clearRect(0, 0, output.canvas.width, output.canvas.height);
+        output.ctx.drawImage(_oscamWebGLEngine.canvas, 0, 0, output.canvas.width, output.canvas.height);
+        stationary.push(pixels(output.canvas));
+      }
+    }
+    return { elapsedMs:nativeNow() - started, stationary };
+  };
+  let comparison;
+  try {
+    const referenceTimes = [];
+    const directTimes = [];
+    let referenceFrames;
+    let directFrames;
+    for (let sample = 0; sample < 3; sample++) {
+      const cpu = runSequence(true);
+      const direct = runSequence(false);
+      referenceTimes.push(cpu.elapsedMs);
+      directTimes.push(direct.elapsedMs);
+      if (sample === 0) {
+        referenceFrames = cpu.stationary;
+        directFrames = direct.stationary;
+      }
+    }
+    const correlations = referenceFrames.map((frame, index) =>
+      perceptual(frame, directFrames[index], output.canvas.width, output.canvas.height).correlation);
+    const median = values => values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
+    comparison = {
+      frames:45,
+      stationaryFrames:correlations.length,
+      correlation:{
+        min:Math.min(...correlations),
+        mean:correlations.reduce((sum, value) => sum + value, 0) / correlations.length,
+      },
+      performance:{
+        referenceMs:median(referenceTimes),
+        directMs:median(directTimes),
+        referenceMsPerFrame:median(referenceTimes) / 45,
+        directMsPerFrame:median(directTimes) / 45,
+        ratio:median(directTimes) / median(referenceTimes),
+        samples:{ reference:referenceTimes, direct:directTimes },
+      },
+    };
+  } finally {
+    if (ownNowDescriptor) Object.defineProperty(performance, 'now', ownNowDescriptor);
+    else delete performance.now;
+  }
+
+  const feed = document.createElement('canvas');
+  feed.width = 640;
+  feed.height = 360;
+  feed.getContext('2d').drawImage(base, 0, 0);
+  const stream = feed.captureStream(30);
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = stream;
+  await video.play();
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const ctx2dProto = CanvasRenderingContext2D.prototype;
+  const glProto = WebGLRenderingContext.prototype;
+  const nativeDrawImage = ctx2dProto.drawImage;
+  const nativeTexImage2D = glProto.texImage2D;
+  const hotPath = { frames:100, drawImageFromVideo:0, texImage2DFromVideo:0 };
+  ctx2dProto.drawImage = function(...args) {
+    if (args[0] === video) hotPath.drawImageFromVideo++;
+    return nativeDrawImage.apply(this, args);
+  };
+  glProto.texImage2D = function(...args) {
+    if (args[5] === video) hotPath.texImage2DFromVideo++;
+    return nativeTexImage2D.apply(this, args);
+  };
+  try {
+    _oscamWebGLEngine.reset();
+    for (let frame = 0; frame < hotPath.frames; frame++) {
+      if (!_oscamWebGLEngine.render(
+        video,
+        video.videoWidth || feed.width,
+        video.videoHeight || feed.height,
+        true,
+        'STATIC',
+        cfg,
+        palette,
+      )) throw new Error('OSCAM WebGL no renderizo video directo');
+    }
+    gl.finish();
+  } finally {
+    ctx2dProto.drawImage = nativeDrawImage;
+    glProto.texImage2D = nativeTexImage2D;
+    stream.getTracks().forEach(track => track.stop());
+    video.srcObject = null;
+  }
+  return { comparison, hotPath };
+})()`;
+
+const LEGACY_ALLOCATION_PHASE = String.raw`
+(() => {
+${HELPERS}
+  const NativeFloat32Array = window.Float32Array;
+  const nativeSlice = NativeFloat32Array.prototype.slice;
+  const ctx2dProto = CanvasRenderingContext2D.prototype;
+  const nativeCreateImageData = ctx2dProto.createImageData;
+  const allocations = { float32:0, float32Slice:0, imageData:0 };
+  window.Float32Array = new Proxy(NativeFloat32Array, {
+    construct(Target, args) {
+      allocations.float32++;
+      return Reflect.construct(Target, args);
+    },
+  });
+  NativeFloat32Array.prototype.slice = function(...args) {
+    allocations.float32Slice++;
+    return nativeSlice.apply(this, args);
+  };
+  ctx2dProto.createImageData = function(...args) {
+    allocations.imageData++;
+    return nativeCreateImageData.apply(this, args);
+  };
+  const resetCounts = () => {
+    allocations.float32 = 0;
+    allocations.float32Slice = 0;
+    allocations.imageData = 0;
+  };
+  const snapshotCounts = () => ({
+    float32:allocations.float32 + allocations.float32Slice,
+    explicitFloat32:allocations.float32,
+    sliceFloat32:allocations.float32Slice,
+    imageData:allocations.imageData,
+  });
+  const previousOut = [OUT_W, OUT_H];
+  OUT_W = 256;
+  OUT_H = 192;
+  const cases = [
+    { name:'static-default', source:makeSource(640, 480), mirror:false, config:{ mode:'STATIC', color:'GREEN', intensity:55, detail:72, presence:80, trace:44, definition:76 } },
+    { name:'static-mirror', source:makeSource(640, 480), mirror:true, config:{ mode:'STATIC', color:'RED', intensity:68, detail:38, presence:74, trace:58, definition:32 } },
+    { name:'static-crop', source:makeSource(640, 360), mirror:false, config:{ mode:'STATIC', color:'BLUE', intensity:42, detail:56, presence:62, trace:48, definition:92 } },
+  ];
+  const results = {};
+  try {
+    for (const test of cases) {
+      configure(test.config);
+      _resetOscamPersistence();
+      const output = makeOutput(256, 192);
+      resetCounts();
+      _renderOscamLegacy(test.source, test.source.width, test.source.height, output.ctx, test.mirror);
+      const warmup = snapshotCounts();
+      resetCounts();
+      for (let frame = 0; frame < 100; frame++) {
+        _renderOscamLegacy(test.source, test.source.width, test.source.height, output.ctx, test.mirror);
+      }
+      results[test.name] = {
+        frames:100,
+        warmup,
+        steady:snapshotCounts(),
+        finalPixelHash:pixelHash(pixels(output.canvas)),
+      };
+    }
+    return {
+      frames:Object.values(results).reduce((sum, result) => sum + result.frames, 0),
+      results,
+    };
+  } finally {
+    OUT_W = previousOut[0];
+    OUT_H = previousOut[1];
+    window.Float32Array = NativeFloat32Array;
+    NativeFloat32Array.prototype.slice = nativeSlice;
+    ctx2dProto.createImageData = nativeCreateImageData;
+    _resetOscamPersistence();
+  }
+})()`;
+
 async function navigate(page, url) {
   await page.send('Page.navigate', { url });
   await waitFor(
@@ -458,6 +695,9 @@ async function main() {
     contextLossEvent:/addEventListener\('webglcontextlost'/.test(section),
     noAndroidVeto:!section.includes('forceLegacy = /Android'),
     androidCapabilityGate:/!EARLY_IS_ANDROID \|\| _oscamWebGLEngine\.probe\(\)/.test(section),
+    noCpuInputCanvas:!section.includes('inputCvs') && !section.includes('inputCtx'),
+    directSourceUpload:/gl\.texImage2D\(gl\.TEXTURE_2D, 0, gl\.RGBA, gl\.RGBA, gl\.UNSIGNED_BYTE, source\)/.test(section),
+    uvCropMirror:/u_uvScale/.test(section) && /u_uvOffset/.test(section) && /mirror \? -sw : sw/.test(section),
   };
   assert(Object.values(staticChecks).every(Boolean), `checks estaticos=${JSON.stringify(staticChecks)}`);
 
@@ -521,6 +761,25 @@ async function main() {
       assert(result.legacyVsAndroid.perceptual.correlation >= 0.25, `${name} correlacion legacy/Android=${JSON.stringify(result)}`);
       assert(result.legacyVsAndroid.perceptual.contrastA > 0.5 && result.legacyVsAndroid.perceptual.contrastB > 0.5, `${name} sin estructura=${JSON.stringify(result)}`);
     }
+    const directUpload = await evaluate(page, DIRECT_UPLOAD_PHASE);
+    assert(directUpload.comparison.frames === 45 && directUpload.comparison.stationaryFrames === 15, `frames A/B=${JSON.stringify(directUpload)}`);
+    assert(directUpload.comparison.correlation.min > 0.99, `paridad inputCvs/directo=${JSON.stringify(directUpload.comparison)}`);
+    assert(directUpload.comparison.performance.ratio <= 1, `perf inputCvs/directo=${JSON.stringify(directUpload.comparison.performance)}`);
+    assert(directUpload.hotPath.drawImageFromVideo === 0, `drawImage(video) hot path=${JSON.stringify(directUpload.hotPath)}`);
+    assert(directUpload.hotPath.texImage2DFromVideo === 100, `texImage2D(video) hot path=${JSON.stringify(directUpload.hotPath)}`);
+    const legacyAllocations = await evaluate(page, LEGACY_ALLOCATION_PHASE);
+    assert(legacyAllocations.frames === 300, `frames legacy=${JSON.stringify(legacyAllocations)}`);
+    // Golden pixels from 4f29d86, before pooling; an equal hash covers the full RGBA frame.
+    const expectedHashes = {
+      'static-default':'9c819a07',
+      'static-mirror':'5291ebff',
+      'static-crop':'91ab205f',
+    };
+    for (const [name, result] of Object.entries(legacyAllocations.results)) {
+      assert(result.steady.float32 === 0, `${name} Float32Array en regimen=${JSON.stringify(result)}`);
+      assert(result.steady.imageData === 0, `${name} ImageData en regimen=${JSON.stringify(result)}`);
+      assert(result.finalPixelHash === expectedHashes[name], `${name} pixel-diff legacy != 0=${JSON.stringify(result)}`);
+    }
 
     await navigate(page, `${pageBaseUrl}?t14-no-webgl=1`);
     const fallback = await evaluate(page, FALLBACK_PHASE);
@@ -551,6 +810,8 @@ async function main() {
     process.stdout.write(`${JSON.stringify({
       static:{ inlineScripts:scripts.length, syntax:true, transport:USE_PIPE ? 'cdp-pipe/file' : `http:${HTTP_PORT}`, ...staticChecks },
       runtime,
+      directUpload,
+      legacyAllocations,
       fallback,
       badProbe,
       contextLoss,

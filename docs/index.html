@@ -7778,6 +7778,7 @@ let _oscamFrameCvs = document.createElement('canvas');
 let _oscamFrameCtx = _oscamFrameCvs.getContext('2d');
 let _oscamRasterCvs = document.createElement('canvas');
 let _oscamRasterCtx = _oscamRasterCvs.getContext('2d', { willReadFrequently:true });
+let _oscamRasterImageData = null;
 let _oscamStaticMem = new Float32Array(0);
 let _oscamStaticRaw = new Float32Array(0);
 let _oscamStaticHot = new Float32Array(0);
@@ -7790,6 +7791,7 @@ let _oscamPersistSignature = '';
 let _oscamOverlaySignature = '';
 let _oscamStateScope = 'preview';
 const _oscamCaptureStates = new Map();
+const _oscamFloatPools = new Map();
 const OSCAM_STATIC_DITHER_4X4 = [
   0,  8,  2, 10,
  12,  4, 14,  6,
@@ -7804,6 +7806,16 @@ function _oscamSmoothstep(a, b, v) {
 }
 function _oscamRGBA(rgb, alpha) {
   return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${Math.max(0, Math.min(1, alpha)).toFixed(3)})`;
+}
+function _oscamGetFloatPool(name, len, clear = false) {
+  let buffer = _oscamFloatPools.get(name);
+  if (!buffer || buffer.length !== len) {
+    buffer = new Float32Array(len);
+    _oscamFloatPools.set(name, buffer);
+  } else if (clear) {
+    buffer.fill(0);
+  }
+  return buffer;
 }
 function _oscamGetModeKey() {
   return camVariant === 'STD' ? 'STD' : oscamLegacyMode;
@@ -7915,6 +7927,7 @@ function _createOscamRenderState(outW, outH, scope = 'capture') {
     frameCtx: frameCvs.getContext('2d'),
     rasterCvs,
     rasterCtx: rasterCvs.getContext('2d', { willReadFrequently:true }),
+    rasterImageData: null,
     staticMem: new Float32Array(0),
     staticRaw: new Float32Array(0),
     staticHot: new Float32Array(0),
@@ -7948,6 +7961,7 @@ function _pushOscamStateToGlobals(state) {
   _oscamFrameCtx = state.frameCtx;
   _oscamRasterCvs = state.rasterCvs;
   _oscamRasterCtx = state.rasterCtx;
+  _oscamRasterImageData = state.rasterImageData;
   _oscamStaticMem = state.staticMem;
   _oscamStaticRaw = state.staticRaw;
   _oscamStaticHot = state.staticHot;
@@ -7970,6 +7984,7 @@ function _pullOscamStateFromGlobals(state) {
   state.frameCtx = _oscamFrameCtx;
   state.rasterCvs = _oscamRasterCvs;
   state.rasterCtx = _oscamRasterCtx;
+  state.rasterImageData = _oscamRasterImageData;
   state.staticMem = _oscamStaticMem;
   state.staticRaw = _oscamStaticRaw;
   state.staticHot = _oscamStaticHot;
@@ -7994,6 +8009,7 @@ function _withOscamRenderState(state, fn) {
     frameCtx: _oscamFrameCtx,
     rasterCvs: _oscamRasterCvs,
     rasterCtx: _oscamRasterCtx,
+    rasterImageData: _oscamRasterImageData,
     staticMem: _oscamStaticMem,
     staticRaw: _oscamStaticRaw,
     staticHot: _oscamStaticHot,
@@ -8022,6 +8038,7 @@ function _withOscamRenderState(state, fn) {
     _oscamFrameCtx = prev.frameCtx;
     _oscamRasterCvs = prev.rasterCvs;
     _oscamRasterCtx = prev.rasterCtx;
+    _oscamRasterImageData = prev.rasterImageData;
     _oscamStaticMem = prev.staticMem;
     _oscamStaticRaw = prev.staticRaw;
     _oscamStaticHot = prev.staticHot;
@@ -8074,11 +8091,9 @@ function _resetOscamPersistence() {
   _oscamFrameCvs.width = OUT_W;
   _oscamFrameCvs.height = OUT_H;
   _oscamFrameCtx.clearRect(0, 0, OUT_W, OUT_H);
-  _oscamStaticMem = new Float32Array(0);
-  _oscamStaticRaw = new Float32Array(0);
-  _oscamStaticHot = new Float32Array(0);
-  _oscamStaticMemW = 0;
-  _oscamStaticMemH = 0;
+  _oscamStaticMem.fill(0);
+  _oscamStaticRaw.fill(0);
+  _oscamStaticHot.fill(0);
   _oscamStaticToneLow = 0;
   _oscamStaticToneHigh = 1;
   _oscamStaticToneReady = false;
@@ -8155,9 +8170,10 @@ function _buildOscamOverlay() {
   _oscamOverlayCtx.fillRect(0, 0, OUT_W, OUT_H);
   _oscamOverlaySignature = `${OUT_W}x${OUT_H}:${_oscamGetModeKey()}:${oscamColorMode}:${_oscamGetModeKey() === 'STATIC' ? oscamDefinitionVal : 'base'}`;
 }
-function _oscamSmoothGrid(src, w, h, passes) {
-  let a = src.slice();
-  let b = new Float32Array(src.length);
+function _oscamSmoothGrid(src, w, h, passes, poolKey) {
+  let a = _oscamGetFloatPool(`${poolKey}-a`, src.length);
+  let b = _oscamGetFloatPool(`${poolKey}-b`, src.length);
+  a.set(src);
   for (let pass = 0; pass < passes; pass++) {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -8183,9 +8199,10 @@ function _oscamSmoothGrid(src, w, h, passes) {
   }
   return a;
 }
-function _oscamMorphGrid(src, w, h, mode, passes) {
-  let a = src.slice();
-  let b = new Float32Array(src.length);
+function _oscamMorphGrid(src, w, h, mode, passes, poolKey) {
+  let a = _oscamGetFloatPool(`${poolKey}-a`, src.length);
+  let b = _oscamGetFloatPool(`${poolKey}-b`, src.length);
+  a.set(src);
   for (let pass = 0; pass < passes; pass++) {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -8294,8 +8311,8 @@ function _oscamBuildStaticStructure(sig, cfg, staticProfile) {
   const sx = DSI_W / sw;
   const sy = DSI_H / sh;
   const len = sw * sh;
-  const field = new Float32Array(len);
-  const hot = new Float32Array(len);
+  const field = _oscamGetFloatPool('static-field', len);
+  const hot = _oscamGetFloatPool('static-hot', len);
   let sumField = 0;
   let maxField = 0;
   for (let cy = 0; cy < sh; cy++) {
@@ -8340,21 +8357,21 @@ function _oscamBuildStaticStructure(sig, cfg, staticProfile) {
   const meanField = sumField / Math.max(1, len);
   const threshold = Math.min(0.92, meanField + (maxField - meanField) * (0.18 + cfg.staticResolveN * 0.12));
   const soft = staticProfile.structureSoftness;
-  let mask = new Float32Array(len);
+  let mask = _oscamGetFloatPool('static-mask', len);
   for (let i = 0; i < len; i++) mask[i] = _oscamSmoothstep(threshold - soft, threshold + soft, field[i]);
   if (staticProfile.structureClosePasses > 0) {
-    const dilated = _oscamMorphGrid(mask, sw, sh, 'max', staticProfile.structureClosePasses);
-    mask = _oscamMorphGrid(dilated, sw, sh, 'min', staticProfile.structureClosePasses);
+    const dilated = _oscamMorphGrid(mask, sw, sh, 'max', staticProfile.structureClosePasses, 'static-close-dilate');
+    mask = _oscamMorphGrid(dilated, sw, sh, 'min', staticProfile.structureClosePasses, 'static-close-erode');
   }
   if (staticProfile.structureOpenPasses > 0) {
-    const eroded = _oscamMorphGrid(mask, sw, sh, 'min', staticProfile.structureOpenPasses);
-    mask = _oscamMorphGrid(eroded, sw, sh, 'max', staticProfile.structureOpenPasses);
+    const eroded = _oscamMorphGrid(mask, sw, sh, 'min', staticProfile.structureOpenPasses, 'static-open-erode');
+    mask = _oscamMorphGrid(eroded, sw, sh, 'max', staticProfile.structureOpenPasses, 'static-open-dilate');
   }
-  const maskSoft = _oscamSmoothGrid(mask, sw, sh, 1 + (staticProfile.lineLock > 0.36 ? 1 : 0));
-  const fillBase = _oscamSmoothGrid(field, sw, sh, 1 + (staticProfile.fillCoherence > 0.42 ? 1 : 0));
-  const fill = new Float32Array(len);
-  const contour = new Float32Array(len);
-  const lineFieldRaw = new Float32Array(len);
+  const maskSoft = _oscamSmoothGrid(mask, sw, sh, 1 + (staticProfile.lineLock > 0.36 ? 1 : 0), 'static-mask-soft');
+  const fillBase = _oscamSmoothGrid(field, sw, sh, 1 + (staticProfile.fillCoherence > 0.42 ? 1 : 0), 'static-fill-base');
+  const fill = _oscamGetFloatPool('static-fill', len);
+  const contour = _oscamGetFloatPool('static-contour', len);
+  const lineFieldRaw = _oscamGetFloatPool('static-line-field-raw', len);
   for (let y = 0; y < sh; y++) {
     for (let x = 0; x < sw; x++) {
       const idx = y * sw + x;
@@ -8386,7 +8403,7 @@ function _oscamBuildStaticStructure(sig, cfg, staticProfile) {
       );
     }
   }
-  const lineField = _oscamSmoothGrid(lineFieldRaw, sw, sh, staticProfile.lineFieldPasses);
+  const lineField = _oscamSmoothGrid(lineFieldRaw, sw, sh, staticProfile.lineFieldPasses, 'static-line-field');
   return { w:sw, h:sh, fill, contour, hot, mask, maskSoft, lineField };
 }
 function _oscamRenderStaticContours(structure, palette, staticProfile) {
@@ -8484,7 +8501,7 @@ function _oscamBuildComponentRuns(compMap, gw, gh, id, axis) {
 }
 function _oscamBuildSignalGrid(sig, cfg) {
   const len = sig.grid.w * sig.grid.h;
-  const out = new Float32Array(len);
+  const out = _oscamGetFloatPool('analysis-signal', len);
   for (let i = 0; i < len; i++) {
     out[i] = _oscamClamp01(
       sig.grid.detail[i] * (0.58 + cfg.detailN * 0.20) +
@@ -8583,10 +8600,10 @@ function _oscamAnalyzeFrame(src, cfg) {
   const cellW = DSI_W / gw;
   const cellH = DSI_H / gh;
   const cellCount = gw * gh;
-  const blurCell = new Float32Array(cellCount);
-  const edgeCell = new Float32Array(cellCount);
-  const detailCell = new Float32Array(cellCount);
-  const energyCell = new Float32Array(cellCount);
+  const blurCell = _oscamGetFloatPool('analysis-blur', cellCount, true);
+  const edgeCell = _oscamGetFloatPool('analysis-edge', cellCount, true);
+  const detailCell = _oscamGetFloatPool('analysis-detail', cellCount, true);
+  const energyCell = _oscamGetFloatPool('analysis-energy', cellCount);
   const active = new Uint8Array(cellCount);
   const compMap = new Int16Array(cellCount);
   compMap.fill(-1);
@@ -8741,7 +8758,7 @@ function _oscamAnalyzeFrame(src, cfg) {
     compById[comp.id] = comp;
   }
 
-  let cellPresence = new Float32Array(cellCount);
+  let cellPresence = _oscamGetFloatPool('analysis-presence', cellCount);
   for (let i = 0; i < cellCount; i++) {
     const comp = compMap[i] >= 0 ? compById[compMap[i]] : null;
     const boost = comp ? comp.normScore : 0;
@@ -8751,7 +8768,7 @@ function _oscamAnalyzeFrame(src, cfg) {
     else presence *= 0.78 + cfg.presenceN * 0.42 * boost;
     cellPresence[i] = _oscamClamp01(presence);
   }
-  cellPresence = _oscamSmoothGrid(cellPresence, gw, gh, 2);
+  cellPresence = _oscamSmoothGrid(cellPresence, gw, gh, 2, 'analysis-presence-smooth');
 
   _oscamRowMean.fill(0);
   _oscamRowEdge.fill(0);
@@ -8925,7 +8942,10 @@ function _oscamRenderStatic(sig, palette, cfg) {
     _oscamRasterCvs.width = rw;
     _oscamRasterCvs.height = rh;
   }
-  const img = _oscamRasterCtx.createImageData(rw, rh);
+  if (!_oscamRasterImageData || _oscamRasterImageData.width !== rw || _oscamRasterImageData.height !== rh) {
+    _oscamRasterImageData = _oscamRasterCtx.createImageData(rw, rh);
+  }
+  const img = _oscamRasterImageData;
   const px = img.data;
   const raw = _oscamStaticRaw;
   const hot = _oscamStaticHot;
@@ -8971,8 +8991,8 @@ function _oscamRenderStatic(sig, palette, cfg) {
     }
   }
   if (staticProfile.cleanupPasses > 0) {
-    const smoothRaw = _oscamSmoothGrid(raw, rw, rh, staticProfile.cleanupPasses);
-    const smoothHot = _oscamSmoothGrid(hot, rw, rh, Math.min(2, staticProfile.cleanupPasses));
+    const smoothRaw = _oscamSmoothGrid(raw, rw, rh, staticProfile.cleanupPasses, 'static-cleanup-raw');
+    const smoothHot = _oscamSmoothGrid(hot, rw, rh, Math.min(2, staticProfile.cleanupPasses), 'static-cleanup-hot');
     for (let i = 0; i < raw.length; i++) {
       raw[i] = raw[i] * (1 - staticProfile.cleanupMix) + smoothRaw[i] * staticProfile.cleanupMix;
       hot[i] = hot[i] * (1 - staticProfile.cleanupMix * 0.72) + smoothHot[i] * (staticProfile.cleanupMix * 0.72);
@@ -9217,10 +9237,6 @@ function _oscamDrawOverlayOnly(targetCtx) {
 const _oscamWebGLEngine = (() => {
   const PROC_W = 384;
   const PROC_H = 288;
-  const inputCvs = document.createElement('canvas');
-  inputCvs.width = PROC_W;
-  inputCvs.height = PROC_H;
-  const inputCtx = inputCvs.getContext('2d', { willReadFrequently:true });
   let canvas = document.createElement('canvas');
   let gl = null;
   let ready = false;
@@ -9256,18 +9272,23 @@ const _oscamWebGLEngine = (() => {
     varying vec2 v_uv;
     uniform sampler2D u_source;
     uniform vec2 u_texel;
+    uniform vec2 u_uvScale;
+    uniform vec2 u_uvOffset;
     float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+    vec3 sourceTap(vec2 uv) {
+      return texture2D(u_source, u_uvOffset + clamp(uv, 0.0, 1.0) * u_uvScale).rgb;
+    }
     void main() {
       vec3 sum =
-        texture2D(u_source, v_uv + u_texel * vec2(-1.0, -1.0)).rgb * 1.0 +
-        texture2D(u_source, v_uv + u_texel * vec2( 0.0, -1.0)).rgb * 2.0 +
-        texture2D(u_source, v_uv + u_texel * vec2( 1.0, -1.0)).rgb * 1.0 +
-        texture2D(u_source, v_uv + u_texel * vec2(-1.0,  0.0)).rgb * 2.0 +
-        texture2D(u_source, v_uv).rgb * 4.0 +
-        texture2D(u_source, v_uv + u_texel * vec2( 1.0,  0.0)).rgb * 2.0 +
-        texture2D(u_source, v_uv + u_texel * vec2(-1.0,  1.0)).rgb * 1.0 +
-        texture2D(u_source, v_uv + u_texel * vec2( 0.0,  1.0)).rgb * 2.0 +
-        texture2D(u_source, v_uv + u_texel * vec2( 1.0,  1.0)).rgb * 1.0;
+        sourceTap(v_uv + u_texel * vec2(-1.0, -1.0)) * 1.0 +
+        sourceTap(v_uv + u_texel * vec2( 0.0, -1.0)) * 2.0 +
+        sourceTap(v_uv + u_texel * vec2( 1.0, -1.0)) * 1.0 +
+        sourceTap(v_uv + u_texel * vec2(-1.0,  0.0)) * 2.0 +
+        sourceTap(v_uv) * 4.0 +
+        sourceTap(v_uv + u_texel * vec2( 1.0,  0.0)) * 2.0 +
+        sourceTap(v_uv + u_texel * vec2(-1.0,  1.0)) * 1.0 +
+        sourceTap(v_uv + u_texel * vec2( 0.0,  1.0)) * 2.0 +
+        sourceTap(v_uv + u_texel * vec2( 1.0,  1.0)) * 1.0;
       float y = luma(sum / 16.0);
       gl_FragColor = vec4(y, y, y, 1.0);
     }
@@ -9549,13 +9570,13 @@ const _oscamWebGLEngine = (() => {
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.BLEND);
-      sourceTex = createTexture(PROC_W, PROC_H, inputCvs);
+      sourceTex = createTexture(PROC_W, PROC_H, null);
       preProgram = makeProgram(preFrag);
       gradProgram = makeProgram(gradFrag);
       lineProgram = makeProgram(lineFrag);
       finalProgram = makeProgram(finalFrag);
       blitProgram = makeProgram(blitFrag);
-      cacheProgramLocations(preProgram, ['u_source', 'u_texel']);
+      cacheProgramLocations(preProgram, ['u_source', 'u_texel', 'u_uvScale', 'u_uvOffset']);
       cacheProgramLocations(gradProgram, ['u_luma', 'u_texel']);
       cacheProgramLocations(lineProgram, ['u_grad', 'u_texel', 'u_sensitivity', 'u_width', 'u_lock', 'u_mode', 'u_time']);
       cacheProgramLocations(finalProgram, ['u_line', 'u_prev', 'u_bg', 'u_floor', 'u_core', 'u_hot', 'u_glow', 'u_scan', 'u_lock', 'u_mode', 'u_time', 'u_resolution']);
@@ -9567,17 +9588,6 @@ const _oscamWebGLEngine = (() => {
       return disable('OSCAM WebGL init failed, using legacy fallback.', err);
     }
   }
-  function drawSource(source, srcW, srcH, mirror) {
-    const [sx, sy, sw, sh] = cropCoords(srcW, srcH);
-    inputCtx.setTransform(1, 0, 0, 1, 0, 0);
-    inputCtx.clearRect(0, 0, PROC_W, PROC_H);
-    if (mirror) {
-      inputCtx.translate(PROC_W, 0);
-      inputCtx.scale(-1, 1);
-    }
-    inputCtx.drawImage(source, sx, sy, sw, sh, 0, 0, PROC_W, PROC_H);
-    inputCtx.setTransform(1, 0, 0, 1, 0, 0);
-  }
   function render(source, srcW, srcH, mirror, mode, cfg, palette) {
     if (failed) return false;
     if (gl && gl.isContextLost()) return disable('OSCAM WebGL context lost, using legacy fallback.');
@@ -9585,15 +9595,21 @@ const _oscamWebGLEngine = (() => {
     try {
       if (gl.isContextLost()) throw new Error('WebGL context lost');
       ensureTargets();
-      drawSource(source, srcW, srcH, mirror);
+      const [sx, sy, sw, sh] = cropCoords(srcW, srcH);
+      const uvScaleX = (mirror ? -sw : sw) / Math.max(1, srcW);
+      const uvOffsetX = (mirror ? sx + sw : sx) / Math.max(1, srcW);
+      const uvScaleY = sh / Math.max(1, srcH);
+      const uvOffsetY = 1 - (sy + sh) / Math.max(1, srcH);
       gl.bindTexture(gl.TEXTURE_2D, sourceTex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, inputCvs);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
 
       const modeId = mode === 'STATIC' ? 2 : mode === 'WAVE' ? 1 : 0;
       runPass(preProgram, lumaTarget, program => {
         bindTexture(program, 'u_source', sourceTex, 0);
         gl.uniform2f(uniformLocation(program, 'u_texel'), 1 / PROC_W, 1 / PROC_H);
+        gl.uniform2f(uniformLocation(program, 'u_uvScale'), uvScaleX, uvScaleY);
+        gl.uniform2f(uniformLocation(program, 'u_uvOffset'), uvOffsetX, uvOffsetY);
       });
       runPass(gradProgram, gradTarget, program => {
         bindTexture(program, 'u_luma', lumaTarget.tex, 0);
