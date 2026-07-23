@@ -13370,6 +13370,7 @@ function _getAsciiBasePreviewCap() {
 // External audio I/O state (desktop only) — declared early for use in analyzeAudio/wmpLoop
 let extAudioCtx  = null;
 let extAnalyser  = null;
+let extTransientAnalyser = null;
 let extMicStream = null;
 let extAudioMode = false;
 // F4 — MIC móvil: analyser vivo pero SIN reemplazar la cámara (mic + cam a la vez, p.ej. FUSION).
@@ -15085,6 +15086,25 @@ function generateImpulseResponse(ctx, type = 'spring', duration = 2.5, decay = 2
   return buffer;
 }
 
+const FLIP_AUDIO_PARAM_TAU = 0.03;
+function _setAudioParamTarget(param, value, ctx, tau = FLIP_AUDIO_PARAM_TAU) {
+  if (!param || !ctx || !Number.isFinite(value)) return;
+  const now = ctx.currentTime;
+  try {
+    if (typeof param.cancelAndHoldAtTime === 'function') {
+      param.cancelAndHoldAtTime(now);
+    } else {
+      const current = param.value;
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(current, now);
+    }
+    param.setTargetAtTime(value, now, tau);
+  } catch (_) {
+    // Older WebKit can reject automation while its context changes state.
+    param.value = value;
+  }
+}
+
 class FlipAudioEngine {
   constructor() {
     this.ctx = null;
@@ -15260,8 +15280,13 @@ class FlipAudioEngine {
     preLowpass.frequency.value = type === 'spring' ? 3200 : 5600;
     const preDelay = this.ctx.createDelay(0.25);
     preDelay.delayTime.value = type === 'spring' ? 0.016 : 0.024;
-    const convolver = this.ctx.createConvolver();
-    convolver.buffer = generateImpulseResponse(this.ctx, type, 2.5, 2.0);
+    const convolverA = this.ctx.createConvolver();
+    const convolverB = this.ctx.createConvolver();
+    convolverA.buffer = generateImpulseResponse(this.ctx, type, 2.5, 2.0);
+    const irGainA = this.ctx.createGain();
+    const irGainB = this.ctx.createGain();
+    irGainA.gain.value = 1;
+    irGainB.gain.value = 0;
     const tone = this.ctx.createBiquadFilter();
     tone.type = 'lowpass';
     tone.frequency.value = type === 'spring' ? 2600 : 4800;
@@ -15274,12 +15299,20 @@ class FlipAudioEngine {
     inputGain.connect(preHighpass);
     preHighpass.connect(preLowpass);
     preLowpass.connect(preDelay);
-    preDelay.connect(convolver);
-    convolver.connect(tone);
+    preDelay.connect(convolverA);
+    preDelay.connect(convolverB);
+    convolverA.connect(irGainA);
+    convolverB.connect(irGainB);
+    irGainA.connect(tone);
+    irGainB.connect(tone);
     tone.connect(postHighpass);
     postHighpass.connect(wetGain);
     wetGain.connect(this.masterGain);
-    return { type, inputGain, preHighpass, preLowpass, preDelay, convolver, tone, postHighpass, wetGain, size:2.5, decay:2.0 };
+    return {
+      type, inputGain, preHighpass, preLowpass, preDelay,
+      convolvers:[convolverA, convolverB], irGains:[irGainA, irGainB], irActive:0,
+      convolver:convolverA, tone, postHighpass, wetGain, size:2.5, decay:2.0
+    };
   }
   _createEchoChain() {
     const inputGain = this.ctx.createGain();
@@ -15336,10 +15369,21 @@ class FlipAudioEngine {
   _scheduleImpulse(effectId, size, decay) {
     clearTimeout(this.irTimers[effectId]);
     this.irTimers[effectId] = setTimeout(() => {
-      if (!this.ctx || !this.effects[effectId]) return;
-      this.effects[effectId].convolver.buffer = generateImpulseResponse(this.ctx, effectId === 'springReverb' ? 'spring' : 'plate', size, decay);
-      this.effects[effectId].size = size;
-      this.effects[effectId].decay = decay;
+      const effect = this.effects[effectId];
+      if (!this.ctx || !effect) return;
+      const next = effect.irActive === 0 ? 1 : 0;
+      effect.convolvers[next].buffer = generateImpulseResponse(
+        this.ctx,
+        effectId === 'springReverb' ? 'spring' : 'plate',
+        size,
+        decay
+      );
+      _setAudioParamTarget(effect.irGains[effect.irActive].gain, 0, this.ctx);
+      _setAudioParamTarget(effect.irGains[next].gain, 1, this.ctx);
+      effect.irActive = next;
+      effect.convolver = effect.convolvers[next];
+      effect.size = size;
+      effect.decay = decay;
     }, 300);
   }
   _setMonitoring(enabled) {
@@ -15377,53 +15421,54 @@ class FlipAudioEngine {
       if (audioMode === 'lofi') cleanLevel -= 0.08;
       cleanLevel = Math.max(0.38, cleanLevel);
     }
-    this.cleanGain.gain.value = cleanLevel;
+    const target = (param, value, tau) => _setAudioParamTarget(param, value, this.ctx, tau);
+    target(this.cleanGain.gain, cleanLevel);
 
     const lofiOn = audioMode === 'lofi' || !!lofiSettings.enabled;
     const lofiMixNorm = Math.max(0, Math.min(1, lofiSettings.mix / 100));
     const toneNorm = Math.max(0, Math.min(1, (lofiSettings.tone - 400) / 3600));
-    this.effects.lofi.filter.frequency.value = lofiSettings.tone;
-    this.effects.lofi.filter.Q.value = 0.7 + toneNorm * 2.3;
+    target(this.effects.lofi.filter.frequency, lofiSettings.tone);
+    target(this.effects.lofi.filter.Q, 0.7 + toneNorm * 2.3);
     this.effects.lofi.saturator.curve = makeSaturationCurve(0.48 + (16 - lofiSettings.crush) / 24);
-    this.effects.lofi.wetGain.gain.value = lofiOn ? Math.pow(lofiMixNorm, 1.18) * 0.78 : 0;
-    this.effects.lofi.noiseGain.gain.value = lofiOn ? 0.0008 + (lofiSettings.grit / 100) * 0.022 : 0;
+    target(this.effects.lofi.wetGain.gain, lofiOn ? Math.pow(lofiMixNorm, 1.18) * 0.78 : 0);
+    target(this.effects.lofi.noiseGain.gain, lofiOn ? 0.0008 + (lofiSettings.grit / 100) * 0.022 : 0);
     if (this.effects.lofi.crusher.kind === 'worklet') {
       const node = this.effects.lofi.crusher.node;
       const freqReduction = Math.max(0.05, Math.min(1, 1 - ((lofiSettings.crush - 4) / 12) * 0.82));
-      node.parameters.get('bitDepth').setValueAtTime(lofiSettings.crush, this.ctx.currentTime);
-      node.parameters.get('frequencyReduction').setValueAtTime(freqReduction, this.ctx.currentTime);
+      target(node.parameters.get('bitDepth'), lofiSettings.crush);
+      target(node.parameters.get('frequencyReduction'), freqReduction);
     } else {
       this.effects.lofi.crusher.node._bitDepth = lofiSettings.crush;
       this.effects.lofi.crusher.node._freqReduction = Math.max(0.05, Math.min(1, 1 - ((lofiSettings.crush - 4) / 12) * 0.82));
     }
 
     const springMixNorm = Math.max(0, Math.min(1, springSettings.mix / 100));
-    this.effects.springReverb.wetGain.gain.value = springSettings.enabled ? Math.pow(springMixNorm, 1.35) * 0.34 : 0;
-    this.effects.springReverb.inputGain.gain.value = springSettings.enabled ? 0.28 + springMixNorm * 0.18 : 0;
-    this.effects.springReverb.preDelay.delayTime.value = 0.01 + springSettings.size * 0.005;
-    this.effects.springReverb.tone.frequency.value = 2000 + springSettings.decay * 260 + springSettings.size * 160;
-    this.effects.springReverb.postHighpass.frequency.value = 160 + springMixNorm * 120;
+    target(this.effects.springReverb.wetGain.gain, springSettings.enabled ? Math.pow(springMixNorm, 1.35) * 0.34 : 0);
+    target(this.effects.springReverb.inputGain.gain, springSettings.enabled ? 0.28 + springMixNorm * 0.18 : 0);
+    target(this.effects.springReverb.preDelay.delayTime, 0.01 + springSettings.size * 0.005);
+    target(this.effects.springReverb.tone.frequency, 2000 + springSettings.decay * 260 + springSettings.size * 160);
+    target(this.effects.springReverb.postHighpass.frequency, 160 + springMixNorm * 120);
     if (Math.abs(this.effects.springReverb.size - springSettings.size) > 0.01 || Math.abs(this.effects.springReverb.decay - springSettings.decay) > 0.01) {
       this._scheduleImpulse('springReverb', springSettings.size, springSettings.decay);
     }
     const plateMixNorm = Math.max(0, Math.min(1, plateSettings.mix / 100));
-    this.effects.plateReverb.wetGain.gain.value = plateSettings.enabled ? Math.pow(plateMixNorm, 1.28) * 0.4 : 0;
-    this.effects.plateReverb.inputGain.gain.value = plateSettings.enabled ? 0.26 + plateMixNorm * 0.16 : 0;
-    this.effects.plateReverb.preDelay.delayTime.value = 0.014 + plateSettings.size * 0.007;
-    this.effects.plateReverb.tone.frequency.value = 2800 + plateSettings.size * 260 + plateSettings.decay * 220;
-    this.effects.plateReverb.postHighpass.frequency.value = 110 + plateMixNorm * 80;
+    target(this.effects.plateReverb.wetGain.gain, plateSettings.enabled ? Math.pow(plateMixNorm, 1.28) * 0.4 : 0);
+    target(this.effects.plateReverb.inputGain.gain, plateSettings.enabled ? 0.26 + plateMixNorm * 0.16 : 0);
+    target(this.effects.plateReverb.preDelay.delayTime, 0.014 + plateSettings.size * 0.007);
+    target(this.effects.plateReverb.tone.frequency, 2800 + plateSettings.size * 260 + plateSettings.decay * 220);
+    target(this.effects.plateReverb.postHighpass.frequency, 110 + plateMixNorm * 80);
     if (Math.abs(this.effects.plateReverb.size - plateSettings.size) > 0.01 || Math.abs(this.effects.plateReverb.decay - plateSettings.decay) > 0.01) {
       this._scheduleImpulse('plateReverb', plateSettings.size, plateSettings.decay);
     }
 
     const echoMixNorm = Math.max(0, Math.min(1, echoSettings.mix / 100));
-    this.effects.echo.wetGain.gain.value = echoSettings.enabled ? Math.pow(echoMixNorm, 1.22) * 0.44 : 0;
-    this.effects.echo.inputGain.gain.value = echoSettings.enabled ? 0.24 + echoMixNorm * 0.16 : 0;
-    this.effects.echo.delay.delayTime.value = Math.max(0.05, Math.min(2, echoSettings.time / 1000));
-    this.effects.echo.feedback.gain.value = Math.max(0, Math.min(0.68, (echoSettings.reps / 100) * 0.72));
-    this.effects.echo.feedbackHighpass.frequency.value = Math.max(140, Math.min(900, echoSettings.color * 0.18));
-    this.effects.echo.filter.frequency.value = echoSettings.color;
-    this.effects.echo.outputTone.frequency.value = Math.max(1200, Math.min(4200, echoSettings.color + 450));
+    target(this.effects.echo.wetGain.gain, echoSettings.enabled ? Math.pow(echoMixNorm, 1.22) * 0.44 : 0);
+    target(this.effects.echo.inputGain.gain, echoSettings.enabled ? 0.24 + echoMixNorm * 0.16 : 0);
+    target(this.effects.echo.delay.delayTime, Math.max(0.05, Math.min(2, echoSettings.time / 1000)));
+    target(this.effects.echo.feedback.gain, Math.max(0, Math.min(0.68, (echoSettings.reps / 100) * 0.72)));
+    target(this.effects.echo.feedbackHighpass.frequency, Math.max(140, Math.min(900, echoSettings.color * 0.18)));
+    target(this.effects.echo.filter.frequency, echoSettings.color);
+    target(this.effects.echo.outputTone.frequency, Math.max(1200, Math.min(4200, echoSettings.color + 450)));
 
     this._setMonitoring(!!s.monitoring);
   }
@@ -15502,21 +15547,29 @@ class FlipAudioEngine {
 const flipAudioEngine = new FlipAudioEngine();
 window.addEventListener('beforeunload', () => { flipAudioEngine.destroy().catch(() => {}); });
 
-// FlipAudioReact — shared audio-reactivity reader used by modules that want exaggerated,
-// per-feature-smoothed band energies (bass/mid/treble/rms) plus a transient spike detector.
+// FlipAudioReact — shared snapshot source. Musical bands use real Hz boundaries while a
+// dedicated, unsmoothed, short-window analyser catches onsets without delaying the visuals.
 // Autonomous: no dependency on any single tab/module. attach(null) fully resets state.
 const FlipAudioReact = {
-  _analyser: null, _freq: null,
+  _analyser: null, _transientAnalyser: null, _freqDb: null, _time: null,
+  _fastTime: null, _fastFreqDb: null, _fastPrevMag: null,
   _sm: { bass: 0, mid: 0, treble: 0, rms: 0 },
-  _rmsAvg: 0,
-  attach(analyser) {
+  _fastRmsAvg: 0, _transient: 0, _lastReadT: null,
+  attach(analyser, transientAnalyser) {
     this._analyser = analyser || null;
-    this._freq = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
+    this._transientAnalyser = transientAnalyser || analyser || null;
+    this._freqDb = analyser ? new Float32Array(analyser.frequencyBinCount) : null;
+    this._time = analyser ? new Float32Array(analyser.fftSize) : null;
+    this._fastTime = this._transientAnalyser ? new Float32Array(this._transientAnalyser.fftSize) : null;
+    this._fastFreqDb = this._transientAnalyser ? new Float32Array(this._transientAnalyser.frequencyBinCount) : null;
+    this._fastPrevMag = this._transientAnalyser ? new Float32Array(this._transientAnalyser.frequencyBinCount) : null;
     this._sm.bass = 0; this._sm.mid = 0; this._sm.treble = 0; this._sm.rms = 0;
-    this._rmsAvg = 0;
+    this._fastRmsAvg = 0;
+    this._transient = 0;
+    this._lastReadT = null;
   },
   read() {
-    if (!this._analyser || !this._freq) {
+    if (!this._analyser || !this._freqDb || !this._time) {
       return { bass: 0, mid: 0, treble: 0, rms: 0, transient: 0 };
     }
     // iOS can re-suspend the AudioContext on tab/app switches even after an initial
@@ -15524,34 +15577,78 @@ const FlipAudioReact = {
     if (typeof extAudioCtx !== 'undefined' && extAudioCtx && extAudioCtx.state === 'suspended') {
       extAudioCtx.resume().catch(()=>{});
     }
-    const freq = this._freq, n = freq.length;
-    this._analyser.getByteFrequencyData(freq);
+    const now = performance.now() / 1000;
+    const dt = this._lastReadT == null ? 1 / 60 : Math.max(0, Math.min(0.25, now - this._lastReadT));
+    this._lastReadT = now;
+    // AnalyserNode applies smoothing per read, not per second. 75ms reproduces
+    // smoothingTimeConstant≈0.80 at 60fps and ≈0.64 at 30fps.
+    this._analyser.smoothingTimeConstant = Math.min(0.999, Math.exp(-dt / 0.075));
+    const freqDb = this._freqDb, time = this._time, n = freqDb.length;
+    this._analyser.getFloatFrequencyData(freqDb);
+    this._analyser.getFloatTimeDomainData(time);
 
-    const bassEnd = Math.max(1, Math.floor(n * 0.08));
-    const midEnd  = Math.max(bassEnd + 1, Math.floor(n * 0.35));
-    let bassSum = 0, midSum = 0, trebSum = 0, sqSum = 0;
-    for (let i = 0; i < bassEnd; i++) bassSum += freq[i];
-    for (let i = bassEnd; i < midEnd; i++) midSum += freq[i];
-    for (let i = midEnd; i < n; i++) trebSum += freq[i];
-    for (let i = 0; i < n; i++) { const v = freq[i] / 255; sqSum += v * v; }
+    const sampleRate = this._analyser.context?.sampleRate || 48000;
+    const binHz = sampleRate / this._analyser.fftSize;
+    const bassEnd = Math.max(1, Math.min(n, Math.floor(250 / binHz) + 1));
+    const midEnd = Math.min(n, Math.max(bassEnd + 1, Math.floor(2000 / binHz) + 1));
+    const trebleEnd = Math.min(n, Math.max(midEnd + 1, Math.floor(8000 / binHz) + 1));
+    let bassPower = 0, midPower = 0, trebPower = 0, timePower = 0;
+    const powerAt = i => Number.isFinite(freqDb[i]) ? Math.pow(10, freqDb[i] / 10) : 0;
+    for (let i = 0; i < bassEnd; i++) bassPower += powerAt(i);
+    for (let i = bassEnd; i < midEnd; i++) midPower += powerAt(i);
+    for (let i = midEnd; i < trebleEnd; i++) trebPower += powerAt(i);
+    for (let i = 0; i < time.length; i++) timePower += time[i] * time[i];
 
-    const bassRaw = Math.min(1, bassSum / (bassEnd * 255));
-    const midRaw  = Math.min(1, midSum  / ((midEnd - bassEnd) * 255));
-    const trebRaw = Math.min(1, trebSum / ((n - midEnd) * 255));
-    const rmsRaw  = Math.min(1, Math.sqrt(sqSum / n));
+    const bassRaw = Math.min(1, Math.sqrt(bassPower / bassEnd));
+    const midRaw  = Math.min(1, Math.sqrt(midPower / (midEnd - bassEnd)));
+    const trebRaw = Math.min(1, Math.sqrt(trebPower / (trebleEnd - midEnd)));
+    const rmsRaw  = Math.min(1, Math.sqrt(timePower / time.length));
 
-    // Per-feature attack/release smoothing: fast rise, slow fall.
-    const _env = (cur, target) => cur + (target - cur) * (target > cur ? 0.6 : 0.12);
+    // Same musical envelope at every display cadence: ~18ms attack, ~130ms release.
+    const _env = (cur, target) => {
+      const tau = target > cur ? 0.018 : 0.13;
+      const alpha = 1 - Math.exp(-dt / tau);
+      return cur + (target - cur) * alpha;
+    };
     this._sm.bass   = _env(this._sm.bass,   bassRaw);
     this._sm.mid    = _env(this._sm.mid,    midRaw);
     this._sm.treble = _env(this._sm.treble, trebRaw);
     this._sm.rms    = _env(this._sm.rms,    rmsRaw);
 
-    // Transient: how far the raw (unsmoothed) rms spikes above its slow rolling average.
-    this._rmsAvg = this._rmsAvg * 0.95 + rmsRaw * 0.05;
-    const transient = Math.max(0, Math.min(1, (rmsRaw - this._rmsAvg) * 6));
+    // The onset path never reads the analyser smoothed at 0.80. Its 256-sample window
+    // is ~5.3ms at 48kHz; an adaptive floor rejects steady tones while preserving hits.
+    let fastRms = 0, spectralFlux = 0, previousSpectrum = 0;
+    const fast = this._transientAnalyser;
+    if (fast && this._fastTime && this._fastFreqDb && this._fastPrevMag) {
+      fast.getFloatTimeDomainData(this._fastTime);
+      fast.getFloatFrequencyData(this._fastFreqDb);
+      for (let i = 0; i < this._fastTime.length; i++) fastRms += this._fastTime[i] * this._fastTime[i];
+      fastRms = Math.sqrt(fastRms / this._fastTime.length);
+      for (let i = 0; i < this._fastFreqDb.length; i++) {
+        const magnitude = Number.isFinite(this._fastFreqDb[i]) ? Math.pow(10, this._fastFreqDb[i] / 20) : 0;
+        const previous = this._fastPrevMag[i];
+        // Existing tones can breathe with their LFO without becoming false hits;
+        // a genuinely new partial still clears both the relative and absolute floor.
+        spectralFlux += Math.max(0, magnitude - previous * 1.50 - 0.0005);
+        previousSpectrum += previous;
+        this._fastPrevMag[i] = magnitude;
+      }
+    }
+    const onsetRise = Math.max(0, fastRms - this._fastRmsAvg);
+    const rmsOnset = Math.max(0, Math.min(1, onsetRise / Math.max(0.008, this._fastRmsAvg * 0.55)));
+    const fluxOnset = Math.max(0, Math.min(1, spectralFlux / Math.max(0.006, previousSpectrum * 0.25)));
+    const onsetStrength = Math.max(rmsOnset, fluxOnset);
+    const floorAlpha = 1 - Math.exp(-dt / (fastRms > this._fastRmsAvg ? 0.12 : 0.45));
+    this._fastRmsAvg += (fastRms - this._fastRmsAvg) * floorAlpha;
+    this._transient = Math.max(onsetStrength, this._transient * Math.exp(-dt / 0.06));
 
-    return { bass: this._sm.bass, mid: this._sm.mid, treble: this._sm.treble, rms: this._sm.rms, transient };
+    return {
+      bass: this._sm.bass,
+      mid: this._sm.mid,
+      treble: this._sm.treble,
+      rms: this._sm.rms,
+      transient: this._transient
+    };
   }
 };
 
@@ -19855,7 +19952,7 @@ let _monitorGain   = null;
 let _monitorOn     = false;
 
 function _setMonitorGain(v) {
-  if (_monitorGain) _monitorGain.gain.value = v / 100;
+  if (_monitorGain) _setAudioParamTarget(_monitorGain.gain, v / 100, extAudioCtx);
 }
 
 function _enableMonitor() {
@@ -19938,6 +20035,7 @@ async function _clearExtAudioChain() {
   extMicStream = null;
   extAudioCtx = null;
   extAnalyser = null;
+  extTransientAnalyser = null;
   extInGainNode = null;
   FlipAudioReact.attach(null);
   await _releaseExtAudioResources(oldStream, oldCtx);
@@ -19995,18 +20093,23 @@ async function _buildExtAudioChain(deviceId, isCurrent = () => true) {
     const nextAnalyser = nextCtx.createAnalyser();
     nextAnalyser.fftSize = 2048;
     nextAnalyser.smoothingTimeConstant = 0.80;
+    const nextTransientAnalyser = nextCtx.createAnalyser();
+    nextTransientAnalyser.fftSize = 256;
+    nextTransientAnalyser.smoothingTimeConstant = 0;
 
     const src = nextCtx.createMediaStreamSource(nextStream);
     const nextGain = nextCtx.createGain();
     nextGain.gain.value = extInGainVal;
     src.connect(nextGain);
     nextGain.connect(nextAnalyser);
+    nextGain.connect(nextTransientAnalyser);
     if (!isCurrent()) { await abandon(); return false; }
     extMicStream = nextStream;
     extAudioCtx = nextCtx;
     extAnalyser = nextAnalyser;
+    extTransientAnalyser = nextTransientAnalyser;
     extInGainNode = nextGain;
-    FlipAudioReact.attach(nextAnalyser);
+    FlipAudioReact.attach(nextAnalyser, nextTransientAnalyser);
   } catch (err) {
     await abandon();
     if (!isCurrent()) return false;
@@ -21691,7 +21794,7 @@ window._syncExtAudioToggleUI = _syncExtAudioToggleUI;
     slider.addEventListener('input', e => {
       extInGainVal = parseFloat(e.target.value) || 1;
       if (label) label.textContent = extInGainVal.toFixed(1) + 'x';
-      if (extInGainNode) extInGainNode.gain.value = extInGainVal;
+      if (extInGainNode) _setAudioParamTarget(extInGainNode.gain, extInGainVal, extAudioCtx);
       try { localStorage.setItem('flip_ext_gain', String(extInGainVal)); } catch(_) {}
     });
   })();
@@ -21753,7 +21856,7 @@ if (!FLIP_IS_MOBILE()) {
   function _cycleMicGain() {
     const idx = GAIN_CYCLE.indexOf(extInGainVal);
     extInGainVal = GAIN_CYCLE[(idx + 1) % GAIN_CYCLE.length] ?? GAIN_CYCLE[0];
-    if (extInGainNode) extInGainNode.gain.value = extInGainVal;
+    if (extInGainNode) _setAudioParamTarget(extInGainNode.gain, extInGainVal, extAudioCtx);
     try { localStorage.setItem('flip_ext_gain', String(extInGainVal)); } catch(_) {}
     // Keep the desktop slider/label in sync in case the panel is later opened.
     const slider = document.getElementById('extGainSlider');
@@ -23650,7 +23753,7 @@ function _editLoop(ts) {
     slider.addEventListener('input', () => {
       extInGainVal = parseFloat(slider.value) || 1;
       if (label) label.textContent = extInGainVal.toFixed(1) + 'x';
-      if (extInGainNode) extInGainNode.gain.value = extInGainVal;
+      if (extInGainNode) _setAudioParamTarget(extInGainNode.gain, extInGainVal, extAudioCtx);
       const mSlider = document.getElementById('extGainSlider');
       const mLabel = document.getElementById('extGainVal');
       if (mSlider) mSlider.value = extInGainVal;
@@ -24277,6 +24380,7 @@ if (IS_STAGE_OUT) (function _initStageOutput() {
     extMicStream?.getTracks().forEach(t => t.stop());
     extMicStream = null;
     extAnalyser = null;
+    extTransientAnalyser = null;
     extInGainNode = null;
     FlipAudioReact.attach(null);
     if (ctx) { try { await ctx.close(); } catch (_) {} }
