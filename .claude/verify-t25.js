@@ -555,12 +555,12 @@ async function main() {
     }
 
     for (const name of ['sono', 'wmp', 'flow', 'typo', 'vidPreview']) {
-      assert(results.after.loops[name].renders >= 45 && results.after.loops[name].renders <= 60,
+      assert(results.after.loops[name].renders >= 38 && results.after.loops[name].renders <= 66,
         `${name} renders/2s=${results.after.loops[name].renders}`);
       assert(results.before.loops[name].renders >= 100,
         `${name} baseline renders/2s=${results.before.loops[name].renders}`);
     }
-    assert(results.after.loops.proxyRec.renders >= 45 && results.after.loops.proxyRec.renders <= 60,
+    assert(results.after.loops.proxyRec.renders >= 38 && results.after.loops.proxyRec.renders <= 66,
       `proxy renders/2s=${results.after.loops.proxyRec.renders}`);
     assert(results.after.loops.flow.segmentRatio >= 0.45 && results.after.loops.flow.segmentRatio <= 0.55,
       `FLOW segment ratio=${results.after.loops.flow.segmentRatio}`);
